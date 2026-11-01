@@ -4,12 +4,14 @@
  *
  * Upload this file to the folder your domain points to (usually public_html),
  * then open https://yourdomain/install.php in a browser.
- * It installs the app, creates the first admin account, checks that the data
- * folder is private, and deletes itself when it's done.
+ * It installs the app, connects it to a MariaDB database, creates the first
+ * account (owner of the first company, and platform admin), checks that the
+ * data folder is private, and deletes itself when it's done.
  *
  * Running it again on an existing install upgrades the app files and keeps
- * every note. That needs an admin's email and password (or, for installs
- * from before 0.6, the old team password).
+ * every note. That needs a platform admin's email and password. On a 0.7.x
+ * install (SQLite, one team) it also brings the notes over into MariaDB as
+ * one company with one production; that needs an admin's email and password.
  */
 declare(strict_types=1);
 
@@ -61,8 +63,8 @@ function inst_web_path(string $sub): string
     return $base . '/' . ($sub === '' ? '' : $sub . '/');
 }
 
-/** Admin accounts in an existing install, or null if it predates accounts. */
-function inst_admins(string $target): ?array
+/** Admin accounts of a 0.7.x install (SQLite), or null if there are none. */
+function inst_sqlite_admins(string $target): ?array
 {
     $db = $target . '/data/notes.sqlite';
     if (!is_file($db) || !extension_loaded('pdo_sqlite')) {
@@ -77,6 +79,32 @@ function inst_admins(string $target): ?array
         return $rows ?: null;
     } catch (Throwable $e) {
         return null;
+    }
+}
+
+/** Connect to MariaDB with the details from the form or the config. Throws a plain-English error. */
+function inst_db(array $c): PDO
+{
+    if (!extension_loaded('pdo_mysql')) {
+        throw new RuntimeException('The pdo_mysql extension is off. Turn it on in cPanel → Select PHP Version → Extensions.');
+    }
+    try {
+        return new PDO('mysql:host=' . ($c['host'] ?: 'localhost') . ';port=' . (int)($c['port'] ?: 3306) . ';dbname=' . $c['name'] . ';charset=utf8mb4',
+            $c['user'], $c['pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+    } catch (PDOException $e) {
+        $why = str_contains($e->getMessage(), 'Access denied') ? 'the user name or password isn’t right, or the user hasn’t been added to the database'
+            : (str_contains($e->getMessage(), 'Unknown database') ? 'there’s no database with that name' : 'the server didn’t answer');
+        throw new RuntimeException('Couldn’t connect to the database: ' . $why . '. Check them in cPanel → MySQL Databases.');
+    }
+}
+
+/** Platform admins of a 0.8+ install (MariaDB). */
+function inst_platform_admins(array $db): array
+{
+    try {
+        return inst_db($db)->query("SELECT email, pass_hash FROM users WHERE platform_role = 'platform_admin' AND status = 'active' AND pass_hash IS NOT NULL")->fetchAll();
+    } catch (Throwable $e) {
+        return [];
     }
 }
 
@@ -96,9 +124,14 @@ function inst_checks(string $target): array
     $c[] = PHP_VERSION_ID >= 80100
         ? ['ok', 'PHP ' . PHP_VERSION]
         : ['fail', 'PHP ' . PHP_VERSION . ' is too old. In cPanel → Select PHP Version, choose 8.2 or newer and click "Set as current".'];
-    $c[] = extension_loaded('pdo_sqlite')
-        ? ['ok', 'SQLite database support (pdo_sqlite)']
-        : ['fail', 'SQLite support is off. In cPanel → Select PHP Version → Extensions, tick pdo_sqlite and sqlite3.'];
+    $c[] = extension_loaded('pdo_mysql')
+        ? ['ok', 'MariaDB database support (pdo_mysql)']
+        : ['fail', 'MariaDB support is off. In cPanel → Select PHP Version → Extensions, tick pdo_mysql and nd_pdo_mysql.'];
+    if (is_file($target . '/data/notes.sqlite') && empty(inst_existing_config($target)['db'])) {
+        $c[] = extension_loaded('pdo_sqlite')
+            ? ['ok', 'SQLite support (pdo_sqlite), to bring over the current notes']
+            : ['fail', 'SQLite support is off, and it’s needed once to bring over the current notes. Tick pdo_sqlite in cPanel → Select PHP Version → Extensions.'];
+    }
     $c[] = extension_loaded('json') || function_exists('json_encode')
         ? ['ok', 'JSON support']
         : ['fail', 'JSON support is off. Tick json in cPanel → Select PHP Version → Extensions.'];
@@ -219,8 +252,15 @@ if ($sub !== '' && !preg_match('/^[a-z0-9][a-z0-9_\-]{0,40}$/i', $sub)) {
 $target = inst_target($sub);
 $existing = inst_existing_config($target);
 $upgrade = $existing !== null;
-$admins = $upgrade ? inst_admins($target) : null;
+// What kind of install this is: new, a 0.7.x install to bring into MariaDB, or a 0.8+ install to update.
+$mode = !$upgrade ? 'new' : (empty($existing['db']) ? 'import' : 'update');
+$admins = $mode === 'import' ? inst_sqlite_admins($target) : ($mode === 'update' ? inst_platform_admins($existing['db']) : null);
 $checks = inst_checks($target);
+if ($mode === 'import' && !$admins) {
+    $checks[] = ['fail', is_file($target . '/data/notes.sqlite')
+        ? 'This install has no admin accounts yet (it’s older than 0.6). Upgrade it to 0.7.8 first, sign in once, then run this installer.'
+        : 'There’s a settings file here but no notes database. If this is a new install, delete data/config.php and reload.'];
+}
 $blocked = (bool)array_filter($checks, fn($c) => $c[0] === 'fail');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['step'] ?? '') === 'install') {
@@ -237,21 +277,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['step'] ?? '') === 'install
         $name = trim((string)($_POST['app_name'] ?? '')) ?: INST_APP;
         $email = strtolower(trim((string)($_POST['email'] ?? '')));
         $person = trim((string)($_POST['person'] ?? ''));
-        if ($upgrade && $admins) {
+        $company = trim((string)($_POST['company'] ?? ''));
+        $production = trim((string)($_POST['production'] ?? ''));
+        $db = $mode === 'update' ? $existing['db'] : ['host' => trim((string)($_POST['db_host'] ?? '')) ?: 'localhost', 'port' => (int)($_POST['db_port'] ?? 0) ?: 3306,
+            'name' => trim((string)($_POST['db_name'] ?? '')), 'user' => trim((string)($_POST['db_user'] ?? '')), 'pass' => (string)($_POST['db_pass'] ?? '')];
+        if ($mode !== 'new') {
             $ok = false;
-            foreach ($admins as $a) {
-                if (hash_equals($a['email'], $email) && password_verify($pw, (string)$a['pass_hash'])) {
+            foreach ($admins ?: [] as $a) {
+                if (hash_equals(strtolower($a['email']), $email) && password_verify($pw, (string)$a['pass_hash'])) {
                     $ok = true;
                 }
             }
             if (!$ok) {
                 sleep(1);
-                $errors[] = 'That isn’t an admin’s email and password, so the upgrade didn’t run.';
-            }
-        } elseif ($upgrade) {
-            if (empty($existing['password_hash']) || !password_verify($pw, (string)$existing['password_hash'])) {
-                sleep(1);
-                $errors[] = 'That isn’t the current team password, so the upgrade didn’t run.';
+                $errors[] = $mode === 'import' ? 'That isn’t an admin’s email and password, so the upgrade didn’t run.'
+                    : 'That isn’t a platform admin’s email and password, so the upgrade didn’t run.';
             }
         } elseif ($person === '' || strlen($person) > 120) {
             $errors[] = 'Enter your name.';
@@ -262,43 +302,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['step'] ?? '') === 'install
         } elseif ($pw !== (string)($_POST['password2'] ?? '')) {
             $errors[] = 'The two passwords don’t match.';
         }
+        if (!$errors && $mode !== 'update' && ($company === '' || $production === '')) {
+            $errors[] = 'Enter the company’s name and the production’s name.';
+        }
+        if (!$errors && $mode !== 'update') {
+            if ($db['name'] === '' || $db['user'] === '') {
+                $errors[] = 'Enter the database name and user from cPanel → MySQL Databases.';
+            } else {
+                try {
+                    $probe = inst_db($db);
+                    if ($mode === 'new' && $probe->query("SHOW TABLES LIKE 'users'")->fetchColumn()) {
+                        $errors[] = 'That database already has a Previously Noted install in it. Use an empty database, or run this installer from the folder of that install to update it.';
+                    }
+                } catch (RuntimeException $e) {
+                    $errors[] = $e->getMessage();
+                }
+            }
+        }
 
         if (!$errors) {
+            $wroteConfig = false;
             try {
                 $log = inst_write_files($target, inst_payload(), $upgrade);
-                if (!$upgrade) {
-                    $cfg = [
+                if ($mode !== 'update') {
+                    $cfg = ($existing ?: []) + [
                         'app_name' => function_exists('mb_substr') ? mb_substr($name, 0, 60) : substr($name, 0, 60),
                         'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
                     ];
+                    $cfg['db'] = $db;
+                    unset($cfg['password_hash']);
                     $php = "<?php\n// Generated by the Previously Noted installer. Keep this file private.\nreturn " . var_export($cfg, true) . ";\n";
                     if (file_put_contents($target . '/data/config.php', $php, LOCK_EX) === false) {
                         throw new RuntimeException('Couldn’t save data/config.php.');
                     }
                     @chmod($target . '/data/config.php', 0640);
-                    $log[] = 'Saved the settings file';
+                    if (function_exists('opcache_invalidate')) {
+                        @opcache_invalidate($target . '/data/config.php', true);
+                    }
+                    $wroteConfig = true;
+                    $log[] = 'Saved the settings file, with the database connection';
                 }
-                // Create or migrate the database through the app's own code.
+                // Create or update the database through the app's own code.
+                $_SERVER['SCRIPT_NAME'] = inst_web_path($sub) . 'index.php';
                 require $target . '/lib/bootstrap.php';
+                require $target . '/lib/connect.php';
+                require $target . '/lib/setup.php';
                 db();
-                $log[] = $upgrade ? 'Database checked and brought up to date; all notes kept' : 'Created the notes database';
-                if (!$upgrade) {
-                    create_user($person, $email, 'admin', $pw);
-                    $log[] = 'Created your admin account (' . $email . '). The password is stored only as a secure hash';
-                } elseif (!$admins) {
-                    $log[] = 'This update adds individual accounts. When you open the app, enter the team password once more to create your admin account';
+                if ($mode === 'new') {
+                    $log[] = 'Created the database tables';
+                    setup_first_account($company, $production, $person, $email, $pw);
+                    $log[] = 'Created your account (' . $email . ') as owner of ' . $company . ' and platform admin. The password is stored only as a secure hash';
+                } elseif ($mode === 'import') {
+                    $r = import_sqlite_install($target . '/data/notes.sqlite', $target . '/data', $company, $production, $email, $pw);
+                    $c = $r['counts'];
+                    $log[] = 'Created the database tables';
+                    $log[] = "Brought over {$c['films']} films, {$c['versions']} versions and {$c['notes']} notes into $company → $production, with every status, reply, transcript and edit";
+                    $log[] = 'You (' . $email . ') are its owner and the platform admin, with your current password. Invite the rest of the team again from People';
+                    $log[] = 'The old notes file stays in the data folder as a backup';
+                } else {
+                    $log[] = 'Database checked and brought up to date; all notes kept';
                 }
 
                 $privacy = inst_probe_private($target, $sub);
                 $deleted = @unlink(__FILE__);
-                $done = ['log' => $log, 'privacy' => $privacy, 'deleted' => $deleted, 'url' => inst_web_path($sub)];
+                $done = ['log' => $log, 'privacy' => $privacy, 'deleted' => $deleted, 'url' => inst_web_path($sub), 'mode' => $mode];
                 $_SESSION = [];
                 session_destroy();
             } catch (Throwable $e) {
-                if (!$upgrade) {
-                    @unlink($target . '/data/config.php'); // so the next try starts fresh
+                if ($wroteConfig) {
+                    // So the next try starts from the same place.
+                    if ($existing) {
+                        file_put_contents($target . '/data/config.php', "<?php\nreturn " . var_export($existing, true) . ";\n", LOCK_EX);
+                    } else {
+                        @unlink($target . '/data/config.php');
+                    }
                 }
-                $errors[] = $e->getMessage();
+                error_log('[previouslynoted] installer: ' . $e->getMessage());
+                $errors[] = $e instanceof PDOException ? 'The database refused a change. Details are in the PHP error log.' : $e->getMessage();
             }
         }
     }
@@ -370,7 +450,7 @@ a { color: inherit; }
     <?php if ($done['privacy'] === 'private'): ?>
       <li class="ok"><span class="dot"></span><span>Checked that the data folder is private: the server refused to hand out a test file</span></li>
     <?php elseif ($done['privacy'] === 'exposed'): ?>
-      <li class="fail"><span class="dot"></span><span>The data folder is reachable from the web. The server ignored the .htaccess rules, so the notes database could be downloaded by anyone who guesses its address.</span></li>
+      <li class="fail"><span class="dot"></span><span>The data folder is reachable from the web. The server ignored the .htaccess rules, so the settings file (with the database password) and fingerprints could be downloaded by anyone who guesses their address.</span></li>
     <?php else: ?>
       <li class="warn"><span class="dot"></span><span>The installer couldn’t check from the server that the data folder is private. Check it yourself below.</span></li>
     <?php endif; ?>
@@ -381,19 +461,19 @@ a { color: inherit; }
     <?php endif; ?>
   </ul>
   <?php if ($done['privacy'] === 'exposed'): ?>
-    <div class="note fail"><p><strong>Don’t import any notes yet.</strong> Ask Namecheap support to enable .htaccess (AllowOverride) for this folder, then open <a href="<?= inst_h($done['url']) ?>data/notes.sqlite" target="_blank" rel="noopener"><?= inst_h($done['url']) ?>data/notes.sqlite</a>. It should say 403 Forbidden.</p></div>
+    <div class="note fail"><p><strong>Fix this before you go on.</strong> Ask Namecheap support to enable .htaccess (AllowOverride) for this folder, then open <a href="<?= inst_h($done['url']) ?>data/config.php" target="_blank" rel="noopener"><?= inst_h($done['url']) ?>data/config.php</a>. It should say 403 Forbidden.</p></div>
   <?php elseif ($done['privacy'] !== 'private'): ?>
-    <div class="note warn"><p>Open <a href="<?= inst_h($done['url']) ?>data/notes.sqlite" target="_blank" rel="noopener"><?= inst_h($scheme . '://' . $host . $done['url']) ?>data/notes.sqlite</a>. It should say 403 Forbidden. If a file downloads instead, don’t import notes until Namecheap support has enabled .htaccess for this folder.</p></div>
+    <div class="note warn"><p>Open <a href="<?= inst_h($done['url']) ?>data/config.php" target="_blank" rel="noopener"><?= inst_h($scheme . '://' . $host . $done['url']) ?>data/config.php</a>. It should say 403 Forbidden. If anything else shows, ask Namecheap support to enable .htaccess for this folder.</p></div>
   <?php endif; ?>
   <h2>Next</h2>
-  <p class="lede">Open the app and sign in with your email and password. Invite the team from <strong>People</strong>, then use <strong>Films &amp; versions</strong> to add your film and import the first Frame.io comment export.</p>
+  <p class="lede"><?= $done['mode'] === 'update' ? 'Open the app and carry on.' : 'Open the app and sign in with your email and password. Invite the team from <strong>People</strong> (in the menu under your name)' . ($done['mode'] === 'new' ? ', then use <strong>Films &amp; versions</strong> to add your film and import the first Frame.io comment export.' : '. Their names stay on the notes they wrote.') ?></p>
   <p><a class="btn" href="<?= inst_h($done['url']) ?>">Open Previously Noted</a></p>
 
 <?php else: ?>
   <h1><?= $upgrade ? 'Upgrade Previously Noted' : 'Install Previously Noted' ?></h1>
-  <p class="lede"><?= $upgrade
-    ? 'An existing install was found here. Upgrading replaces the app’s files and keeps every film, version, note and status.'
-    : 'This puts the app on your server, creates your admin account, and deletes this installer when it’s done.' ?></p>
+  <p class="lede"><?= ['new' => 'This puts the app on your server, connects it to a MariaDB database, creates your account, and deletes this installer when it’s done.',
+    'import' => 'An existing install was found here. This version keeps everything in a MariaDB database and can hold several companies and productions, so the upgrade brings your notes over: every film, version, note, status, reply, transcript and edit, as one company with one production.',
+    'update' => 'An existing install was found here. Upgrading replaces the app’s files and keeps everything in the database.'][$mode] ?></p>
   <p class="ver">Version <?= inst_h(INST_VERSION) ?> · installing into <?= inst_h($target) ?></p>
 
   <h2>Server check</h2>
@@ -411,32 +491,49 @@ a { color: inherit; }
   <form method="post" autocomplete="off">
     <input type="hidden" name="csrf" value="<?= inst_h($_SESSION['inst_csrf']) ?>">
     <input type="hidden" name="step" value="install">
-    <?php if ($upgrade): ?>
+    <?php if ($mode === 'update'): ?>
       <input type="hidden" name="folder" value="<?= inst_h($sub) ?>">
-      <?php if ($admins): ?>
-      <label>Admin email<input type="email" name="email" required autocomplete="username" value="<?= inst_h($_POST['email'] ?? '') ?>"></label>
-      <label>Admin password<input type="password" name="password" required autocomplete="current-password"></label>
-      <p class="hint">Any active admin’s account works.</p>
-      <?php else: ?>
-      <label>Current team password<input type="password" name="password" required autocomplete="current-password"></label>
-      <p class="hint">This update replaces the shared team password with individual accounts. You’ll enter it once more in the app to create your admin account.</p>
-      <?php endif; ?>
+      <label>Platform admin email<input type="email" name="email" required autocomplete="username" value="<?= inst_h($_POST['email'] ?? '') ?>"></label>
+      <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
       <button <?= $blocked ? 'disabled' : '' ?>>Upgrade to <?= inst_h(INST_VERSION) ?></button>
     <?php else: ?>
+      <?php if ($mode === 'import'): ?>
+      <input type="hidden" name="folder" value="<?= inst_h($sub) ?>">
+      <label>Your admin email<input type="email" name="email" required autocomplete="username" value="<?= inst_h($_POST['email'] ?? '') ?>"></label>
+      <label>Your password<input type="password" name="password" required autocomplete="current-password"></label>
+      <p class="hint">You’ll be the owner, and keep this password. Other people aren’t carried over: you invite them again from People, and their names stay on their notes.</p>
+      <?php else: ?>
       <p class="hint" style="margin:0">Upgrading an install that lives in a subfolder? Open this page as install.php?folder=<em>name</em>.</p>
       <label>Name shown in the app’s header<input name="app_name" maxlength="60" value="<?= inst_h($_POST['app_name'] ?? INST_APP) ?>"></label>
+      <?php endif; ?>
+      <label>Company name<input name="company" maxlength="120" required value="<?= inst_h($_POST['company'] ?? '') ?>" placeholder="Your production company"></label>
+      <label><?= $mode === 'import' ? 'Production name (for the films you have now)' : 'First production' ?><input name="production" maxlength="120" required value="<?= inst_h($_POST['production'] ?? '') ?>" placeholder="The film or series"></label>
+      <?php if ($mode === 'new'): ?>
       <label>Your name<input name="person" maxlength="60" required autocomplete="name" value="<?= inst_h($_POST['person'] ?? '') ?>"></label>
       <label>Your email<input type="email" name="email" required autocomplete="username" value="<?= inst_h($_POST['email'] ?? '') ?>"></label>
       <label>Password<input type="password" name="password" minlength="10" required autocomplete="new-password"></label>
       <label>Type it again<input type="password" name="password2" minlength="10" required autocomplete="new-password"></label>
-      <p class="hint">This is your admin account. You invite everyone else from People once you’re in, and each person gets their own sign-in. At least 10 characters.</p>
+      <p class="hint">You’ll own the company and be the platform admin. You invite everyone else from People once you’re in, and each person gets their own sign-in. At least 10 characters.</p>
+      <?php endif; ?>
+      <h2>Database</h2>
+      <p class="hint" style="margin:0">In cPanel → <strong>MySQL Databases</strong>: create a database, create a user, and add the user to the database with <strong>All privileges</strong>. Then enter them here.</p>
+      <label>Database name<input name="db_name" required value="<?= inst_h($_POST['db_name'] ?? '') ?>" placeholder="cpaneluser_notes"></label>
+      <label>Database user<input name="db_user" required value="<?= inst_h($_POST['db_user'] ?? '') ?>" placeholder="cpaneluser_notes"></label>
+      <label>Database user’s password<input type="password" name="db_pass" autocomplete="off"></label>
+      <details>
+        <summary>Database server (usually leave as it is)</summary>
+        <label style="margin-top:12px">Host<input name="db_host" value="<?= inst_h($_POST['db_host'] ?? 'localhost') ?>"></label>
+        <label>Port<input name="db_port" inputmode="numeric" value="<?= inst_h($_POST['db_port'] ?? '3306') ?>"></label>
+      </details>
+      <?php if ($mode === 'new'): ?>
       <details <?= $sub !== '' ? 'open' : '' ?>>
         <summary>Install in a subfolder instead</summary>
         <label style="margin-top:12px">Folder
           <span class="prefix"><span><?= inst_h($host . inst_web_path('')) ?></span><input name="folder" value="<?= inst_h($sub) ?>" placeholder="leave empty for the main address" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,40}"></span>
         </label>
       </details>
-      <button <?= $blocked ? 'disabled' : '' ?>>Install</button>
+      <?php endif; ?>
+      <button <?= $blocked ? 'disabled' : '' ?>><?= $mode === 'import' ? 'Upgrade and bring over the notes' : 'Install' ?></button>
     <?php endif; ?>
   </form>
 <?php endif; ?>

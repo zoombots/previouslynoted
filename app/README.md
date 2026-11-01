@@ -4,7 +4,7 @@
 
 A self-hosted tool for following review notes across versions of a cut. It plays the video with the notes in sync, keeps a status history for every note, and carries unfinished notes into the next version so nothing is lost.
 
-Built for shared hosting: PHP 8.1+ and SQLite, no build step, no Node, no database server to set up.
+Built for shared hosting: PHP 8.1+ and the MariaDB database that cPanel hosting includes, no build step, no Node. One install serves several companies, each with its own productions, people and connections.
 
 ## What it does
 
@@ -21,7 +21,7 @@ Built for shared hosting: PHP 8.1+ and SQLite, no build step, no Node, no databa
 - **Status with history.** Open → Addressed → Approved, plus To discuss, Won't do, Cut from film and Superseded. Every change records who, when, on which version, and an optional reason.
 - **Carry forward.** When you add the next version, every note that isn't finished comes with it, marked *not placed*. Play the new cut, find each moment, press **Pin to playhead**. Notes keep their history across all versions.
 - **Export.** Download every note for a film as a CSV, with its current status and its timecode in each version.
-- **Accounts and roles.** Everyone signs in with their own email and password. Admins invite people by link and choose what each person can do: Admin, Editor, Reviewer or Viewer.
+- **Companies, productions and roles.** Everyone signs in with their own email and password, and can belong to several companies. A company has productions (each with its own films); people see only the productions they're given, as Admin, Editor, Reviewer or Viewer. Company admins invite people by link.
 
 The video plays from the reviewer's own computer (or from a link). It is never uploaded to your server.
 
@@ -29,22 +29,25 @@ The video plays from the reviewer's own computer (or from a link). It is never u
 
 1. **Point the domain.** If previouslynoted.com is registered at Namecheap, add it to your hosting in cPanel → **Domains** (or it's already the main domain). Note the folder cPanel shows for it: `public_html` for the main domain, or its own folder for an addon domain.
 2. **Turn on HTTPS.** cPanel → **SSL/TLS Status** → run **AutoSSL** for the domain. Wait until it's green; it can take a few minutes after the domain starts pointing at the server.
-3. **Set PHP.** cPanel → **Select PHP Version**: choose **8.2** or newer and click *Set as current*. On the **Extensions** tab, tick **pdo_sqlite** and **sqlite3** (and **mbstring** if it isn't already).
-4. **Upload the installer.** cPanel → **File Manager**, open the domain's folder, and upload `install.php`.
-5. **Run it.** Open `https://previouslynoted.com/install.php`. It checks the server, creates your admin account (name, email, password), installs everything, checks that the data folder can't be downloaded, and deletes itself.
-6. **Open the app** at `https://previouslynoted.com`, sign in with your email and password, and invite the team from your name's menu → **People**.
+3. **Set PHP.** cPanel → **Select PHP Version**: choose **8.2** or newer and click *Set as current*. On the **Extensions** tab, tick **pdo_mysql** (and **mbstring** if it isn't already).
+4. **Make the database.** cPanel → **MySQL Databases**: create a database (for example `notes`), create a user with a strong password, and under *Add user to database* give that user **All privileges** on it. cPanel puts your account name in front of both, like `cpaneluser_notes`.
+5. **Upload the installer.** cPanel → **File Manager**, open the domain's folder, and upload `install.php`.
+6. **Run it.** Open `https://previouslynoted.com/install.php`. It checks the server and asks for the database name, user and password, the name of your company and first production, and your name, email and password. It installs everything, creates the tables, checks that the data folder can't be downloaded, and deletes itself. You own the company and are the *platform admin*, who can add other companies later.
+7. **Open the app** at `https://previouslynoted.com`, sign in with your email and password, and invite the team from your name's menu → **People**.
 
 To install into a subfolder instead (e.g. `/notes`), open *Install in a subfolder instead* on the installer page.
 
 ### Upgrading
 
-Upload the newer `install.php` to the same place and open it. It finds the existing install, asks for an admin's email and password, replaces the app files, and keeps every note. For a subfolder install, open `install.php?folder=notes` (with your folder's name).
+Upload the newer `install.php` to the same place and open it. It finds the existing install, asks for a platform admin's email and password, replaces the app files, and keeps every note. For a subfolder install, open `install.php?folder=notes` (with your folder's name).
 
-**Upgrading from 0.5 or earlier** (the shared team password): the installer asks for the team password one last time. Then open the app: it asks for the team password once more, with your name, email and a new password, and makes you the first admin. After that the team password stops working; invite everyone from **People**. Names already in the notes history stay as they are.
+**Upgrading from 0.7** (one team, notes in `data/notes.sqlite`): make the database first (step 4 above), and keep **pdo_sqlite** ticked for the upgrade. The installer asks for your admin email and password, the database, and names for your company and production. It brings every film, version, note, status, reply, transcript, edit, track and picture fingerprint into the database, as one company with one production, and moves the Frame.io, ElevenLabs and email settings with them. You become the owner, keeping your password. **Other people aren't carried over**: invite them again from **People**; their names stay on the notes they wrote. The old `notes.sqlite` stays in `data/` as a backup. (On the command line, `php tools/import_sqlite.php` from the source does the same.)
+
+Installs older than 0.6 (the shared team password) need to go to 0.7.8 first.
 
 ### Manual install (without the installer)
 
-Upload the contents of `previouslynoted.zip` to the domain's folder and open the site; it runs the same first-time setup. Then check that `https://previouslynoted.com/data/notes.sqlite` says **403 Forbidden**.
+Upload the contents of `previouslynoted.zip` to the domain's folder and open the site; it asks for the database, then runs the same first-time setup (and, if it finds a 0.7 `data/notes.sqlite`, offers to bring those notes over). Then check that `https://previouslynoted.com/data/config.php` says **403 Forbidden**.
 
 ## Connecting Frame.io and ElevenLabs
 
@@ -131,24 +134,41 @@ Playback speed and Frame.io quality are in the small speed menu in the transport
 
 **Help:** your name's menu → **Help and shortcuts** (or press **?**) opens a short guide to the keys and the main tasks, showing only what your role can do.
 
-### People and roles
+### Companies, productions and people
 
-Open your name's menu (top right). **Your account and password** changes your name, email and password; changing the password signs you out everywhere else.
+Each **company** has one or more **productions**: a film or series and its versions. People see only the productions they've been given; switch between them with the picker at the left of the header (it appears when you have more than one).
 
-Admins also see **People**:
+Open your name's menu (top right). **Your account and password** changes your name, email and password; they're the same in every company you're part of. Changing the password signs you out everywhere else.
+
+What someone can do in a production:
 
 | Role | Can |
 | --- | --- |
-| Admin | Everything, plus People, Settings and connections, and deleting versions |
+| Admin | Everything an editor can, plus deleting versions and choosing who in the company can open the production |
 | Editor | Notes and statuses, versions, imports, edits, transcripts, tracks, approving script lines |
 | Reviewer | Add notes and replies, suggest script wording as drafts. Can't change statuses or approve |
 | Viewer | Watch and read only |
 
-- **Invite:** enter a name, email and role, then **Invite**. With email set up (below), the invite is emailed from your address (for example hello@previouslynoted.com), with you as the reply-to. Without it, copy the link or press **Email it** to open a message in your own mail app. The link works once, for 7 days.
-- **Forgotten password:** **Email a reset link** (or **Reset link**, without email set up) on their row makes a one-time link that works for 48 hours. The old password keeps working until they use it.
-- **Locked out:** after 5 wrong passwords an account waits 10 minutes. **Unlock** lets them try straight away.
-- **Turn off** signs someone out at once and stops them signing in; their notes and history stay. **Remove** deletes an invite or a turned-off account. There's always at least one active admin.
-- A role change applies on the server straight away; their buttons update when they reload the page.
+And in the company:
+
+| Company role | Can |
+| --- | --- |
+| Owner | Everything a company admin can, plus making other owners. There's always at least one |
+| Company admin | Admin in every production of the company. Invites and removes people, makes, renames and archives productions, connects Frame.io and ElevenLabs |
+| Member | Only what their productions give them. A member with no production can't see any |
+
+**People** (production admins and company admins) lists everyone in the company with their role in the production you're on:
+
+- **Give access:** pick a role next to someone, or *No access* to take it away. It applies at once.
+- **Invite** (company admins): enter a name, email, their role in this production and in the company, then **Invite**. With email set up, the invite is emailed, with you as the reply-to; without it, copy the link or press **Email it**. The link works once, for 7 days, only for that email address. Someone who already has an account (with another company) just signs in to join.
+- **Forgotten password:** everyone resets their own with **Forgot your password?** on the sign-in page (by email). Company admins can't reset passwords, because an account can belong to other companies too.
+- **Remove** takes someone out of the company and all its productions at once. Their account and their notes stay.
+
+**Company and productions** (company admins) lists the productions: open, rename, **Archive** (read-only for everyone until it's reopened) or make a new one. It also shows when Previously Noted support looked at your productions or acted for someone.
+
+**Settings and connections** (company admins): Frame.io and ElevenLabs are connected per company, and every production in it uses them.
+
+**Staff.** The platform admin (you, after installing) has **All companies** in the name menu: make companies (with the owner's invite), suspend or reactivate one, open any production, issue password reset links, turn accounts off, unlock them, and **See as them** to reproduce a problem as someone else. *Support* staff can do the same read-only. Whatever staff do while seeing the app as someone is listed in that company's activity.
 
 ### Edits: what to export
 
@@ -264,6 +284,8 @@ Browsers play H.264 MP4 (Frame.io's downloads and proxies are fine). ProRes and 
 
 Invites and reset links can go out from your own mailbox, such as hello@previouslynoted.com. Sending through the domain's own mail server, with the domain's email authentication in place, is what keeps them out of spam.
 
+Email is set up once for the whole install, by the platform admin.
+
 **1. Set it up in the app.** Your name's menu → **Settings and connections** → **Email**:
 
 | | cPanel mailbox (Stellar Plus) | Namecheap Private Email |
@@ -285,7 +307,7 @@ If it says the certificate didn't match, use the server name shown in cPanel →
 
 Then send yourself a test at a Gmail address and use *Show original*: SPF, DKIM and DMARC should all say **PASS**.
 
-Every invite and reset link is still shown to the admin too, so if an email doesn't arrive you can copy the link and send it another way.
+Every invite is still shown to the admin too, so if an email doesn't arrive you can copy the link and send it another way. Without email, **Forgot your password?** can't send links: people ask the platform admin, who makes one in **All companies**.
 
 ## Brand
 
@@ -293,30 +315,31 @@ The icon is a note carried forward: the outline behind is the previous cut, the 
 
 ## Backups
 
-Everything lives in `data/notes.sqlite`. Download it now and then from File Manager, or include it in cPanel → **Backup**. To restore, put the file back in `data/`.
+Notes, people and settings live in the MariaDB database; picture fingerprints are files in `data/fingerprints/`. cPanel → **Backup** includes both (*Download a MySQL Database Backup* for the database alone, or phpMyAdmin → Export). To restore, import the database back and put `data/` back.
 
-`data/config.php` holds the app name; passwords are stored only as hashes in the database. `data/connections.php` holds the Frame.io and ElevenLabs credentials (never sent to browsers).
+`data/config.php` holds the app name and the database connection. Passwords are stored only as hashes. Frame.io and ElevenLabs credentials are in the database, per company, and never sent to browsers.
 
-**Every admin locked out?** Rename `data/config.php` in File Manager and open the site. It shows the setup page: enter your existing email and a new password and you're an admin again (a new email creates a new admin). Notes and other accounts are kept. Anyone who can reach File Manager can do this, which is why it's the recovery route.
+**Locked out?** Rename `data/config.php` in File Manager and open the site. It asks for the database again; once connected, enter your existing email and a new password and you're a platform admin again. Notes and other accounts are kept. Anyone who can reach File Manager can do this, which is why it's the recovery route.
 
 ## Security notes
 
 - Individual accounts with roles, enforced on the server for every action (hidden buttons are just convenience). Passwords are hashed with PHP's `password_hash`; invite and reset links are stored only as hashes and work once.
+- Companies share one database, so every request is checked once on the server: each film, version, note, transcript and job it names is looked up to find its production, and the person's role there is worked out (company suspended → no access; platform admin; company owner or admin; their own access; support read-only). Anything in a production they can't open gets the same answer as something that doesn't exist. The tests in `tests/mt/` try every action with another company's ids.
 - Each account locks for 10 minutes after 5 wrong passwords, and repeated attempts from one browser are slowed. Sessions last 14 days; changing a password, a reset, or turning an account off ends that person's other sessions straight away.
-- Only admins can connect Frame.io or ElevenLabs or see their settings.
+- Only company admins can connect Frame.io or ElevenLabs or see their settings, and only the platform admin can set up email.
 - `data/` and `lib/` are blocked from the web by `.htaccess`. The installer tests this on your server. Pages ask search engines not to index them.
 - Comment text is all the server stores. Video never leaves the reviewer's machine unless you paste a link.
 
 ## Files
 
 ```
-index.php        sign-in, setup and the app page
+index.php        sign-in, setup, invites and the app page
 oauth.php        where Adobe returns after "Sign in with Adobe"
 api.php          JSON endpoints used by the page
-lib/             PHP helpers: Frame.io CSV import, edit readers (OTIO, FCP7 XML, EDL), transcripts, placement,
-                 Frame.io and ElevenLabs connections
+lib/             PHP helpers: database schema, companies and roles (tenancy.php), Frame.io CSV import,
+                 edit readers (OTIO, FCP7 XML, EDL), transcripts, placement, Frame.io and ElevenLabs connections
 assets/          app.js and app.css
-data/            database and config (created on setup, never public)
+data/            config and picture fingerprints (created on setup, never public)
 .htaccess        access rules
 .user.ini        upload size (edit files can be tens of MB) and memory
 ```

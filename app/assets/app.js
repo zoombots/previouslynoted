@@ -2901,9 +2901,11 @@
           'Manage → Tracks adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
           'Notes out, on each version: Markers… downloads a marker file for Avid, Resolve or Premiere at the version’s timecode; Post to Frame.io… adds the notes as comments on the linked Frame.io file.')) : null,
       can('admin') ? sec('Admin', false,
-        L('People (in this menu): invite someone, choose their role, email a reset link, unlock, turn off or remove.',
-          'Roles: Viewer watches; Reviewer adds notes, replies and draft script lines; Editor does everything with notes, versions and tracks; Admin also manages people, settings and deleting versions.',
-          'Settings and connections: Frame.io, ElevenLabs and email for invites.')) : null,
+        L('People (in this menu): everyone in the company. Pick each person’s role in this production, or No access.',
+          'Roles: Viewer watches; Reviewer adds notes, replies and draft script lines; Editor does everything with notes, versions and tracks; Admin also deletes versions and chooses who can open the production.',
+          ...(companyAdmin() ? ['Company admins also invite people, remove them from the company, and make or archive productions (Company and productions).',
+            'Settings and connections: Frame.io and ElevenLabs for the whole company.'] : ['Inviting someone new is for company admins.']),
+          'The production picker at the top left switches between your productions.')) : null,
       el('p', { class: 'small', text: `In this production you’re ${ROLE_NAMES[ROLE] || 'a viewer'}.${companyAdmin() ? ' As a company admin you also invite people and make productions (your name menu → People, Company and productions).' : ''} The README that came with the app has the full guide.` }),
       el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn primary', text: 'Close', onclick: closeDialog })));
   }

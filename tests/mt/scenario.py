@@ -17,6 +17,9 @@ def setup():
     b.page('', app_name='Previously Noted', db_name='pn_test', db_user='pn', db_pass='pn-pass', db_host='127.0.0.1', db_port='3306')
     r = b.page('', company='Rotating Planet', workspace='Documentaries', email='francis@example.com', password='recovered-pass1')
     assert 'data-csrf' in r.text, 'import failed'
+    # The imported Frame.io sign-in has been used up by earlier runs against the mock: sign in with Adobe again.
+    r = b.s.get('http://127.0.0.1:8082/oauth.php', params={'start': 1, 'ws': b.ws})
+    assert 'fio=connected' in r.url, r.url
     return b
 
 

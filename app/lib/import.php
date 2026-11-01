@@ -232,7 +232,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
             $frame = max(0, (int)$c['frame']);
             $end = isset($c['end']) && (int)$c['end'] > $frame ? (int)$c['end'] : null;
             $complete = !empty($c['complete']) ? 1 : 0;
-            $author = trim((string)$c['author']) ?: 'Unknown';
+            $author = mb_substr(trim((string)$c['author']), 0, 200) ?: 'Unknown';
 
             // A comment this app posted: it's already a note here. Pick up its replies and completion only.
             $findPushed->execute([$versionId, $cid]);
@@ -265,7 +265,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
                 }
             }
             if (!$note) {
-                $insNote->execute([$filmId, $versionId, $cid, $author, $tag, $text, $c['created_at'] ?: now_iso()]);
+                $insNote->execute([$filmId, $versionId, mb_substr($cid, 0, 64), $author, mb_substr($tag, 0, 100), $text, mb_substr((string)$c['created_at'], 0, 40) ?: now_iso()]);
                 $noteId = (int)$pdo->lastInsertId();
                 $insPos->execute([$noteId, $versionId, $frame, $end, $complete]);
                 add_event($noteId, $versionId, $complete ? 'addressed' : 'open', $complete ? 'Marked complete in Frame.io' : null, $sourceName);
@@ -305,7 +305,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
                 if ($rt === '') {
                     continue;
                 }
-                $ra = trim((string)$r['author']) ?: 'Unknown';
+                $ra = mb_substr(trim((string)$r['author']), 0, 200) ?: 'Unknown';
                 // When the API doesn't say who replied, match on the text alone so a CSV-imported reply isn't repeated.
                 if ($ra === 'Frame.io user') {
                     $hasReplyText->execute([$noteId, $rt]);
@@ -315,7 +315,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
                     $known = $hasReply->fetchColumn();
                 }
                 if (!$known) {
-                    $insReply->execute([$noteId, $versionId, $ra, $rt, $r['created_at'] ?: now_iso()]);
+                    $insReply->execute([$noteId, $versionId, $ra, $rt, mb_substr((string)$r['created_at'], 0, 40) ?: now_iso()]);
                     $stats['replies']++;
                 }
             }

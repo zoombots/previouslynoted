@@ -9,7 +9,7 @@ declare(strict_types=1);
 define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
-define('APP_VERSION', '0.7.8');
+define('APP_VERSION', '0.8.0');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -78,6 +78,9 @@ function write_config(array $cfg): void
         throw new RuntimeException('Could not write data/config.php. Check folder permissions.');
     }
     @chmod(CONFIG_FILE, 0640);
+    if (function_exists('opcache_invalidate')) {
+        @opcache_invalidate(CONFIG_FILE, true);
+    }
 }
 
 function start_session(): void
