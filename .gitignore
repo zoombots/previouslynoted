@@ -1,0 +1,22 @@
+# Build output
+/out/
+
+# Runtime data: the database, config with secrets, uploads, fingerprints
+/app/data/*
+!/app/data/.gitkeep
+
+# Local test artefacts
+/tests/visual/*.webm
+/tests/visual/*.txt
+/tests/visual/src/
+/tests/visual/seg/
+/tests/smtp/inbox/
+/tests/smtp/*.pem
+/tests/smtp/log.txt
+/tests/mock/*.log
+/tests/mock/tokens.txt
+/tests/mock/user.json
+/tests/match-bench/*.g64
+/tests/match-bench/*.webm
+/.impeccable/live/
+*.pyc

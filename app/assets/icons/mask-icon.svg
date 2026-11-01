@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <clipPath id="behind">
+      <path clip-rule="evenodd" d="M0 0h512v512H0z M126 146h232a50 50 0 0 1 50 50v158a50 50 0 0 1-50 50H126a50 50 0 0 1-50-50V196a50 50 0 0 1 50-50z"/>
+    </clipPath>
+  </defs>
+  <rect x="150" y="90" width="270" height="198" rx="32" fill="none" stroke="#000" stroke-width="26" clip-path="url(#behind)"/>
+  <path fill="#000" fill-rule="evenodd" d="M128 164h228a36 36 0 0 1 36 36v150a36 36 0 0 1-36 36H128a36 36 0 0 1-36-36V200a36 36 0 0 1 36-36z M186 204 h112 a28 28 0 0 1 28 28 v38 a28 28 0 0 1 -28 28 h-38 l-18 34 l-18 -34 h-38 a28 28 0 0 1 -28 -28 v-38 a28 28 0 0 1 28 -28 z"/>
+</svg>

@@ -1,0 +1,787 @@
+{
+ "fps": 24,
+ "A": [
+  {
+   "shot": 0,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 0,
+   "rec_out": 5.0
+  },
+  {
+   "shot": 1,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 5.0,
+   "rec_out": 10.0
+  },
+  {
+   "shot": 2,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 10.0,
+   "rec_out": 15.0
+  },
+  {
+   "shot": 3,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 15.0,
+   "rec_out": 20.0
+  },
+  {
+   "shot": 4,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 20.0,
+   "rec_out": 25.0
+  },
+  {
+   "shot": 5,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 25.0,
+   "rec_out": 30.0
+  },
+  {
+   "shot": 6,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 30.0,
+   "rec_out": 35.0
+  },
+  {
+   "shot": 7,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 35.0,
+   "rec_out": 40.0
+  },
+  {
+   "shot": 8,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 40.0,
+   "rec_out": 45.0
+  },
+  {
+   "shot": 9,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 45.0,
+   "rec_out": 50.0
+  },
+  {
+   "shot": 10,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 50.0,
+   "rec_out": 55.0
+  },
+  {
+   "shot": 11,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 55.0,
+   "rec_out": 60.0
+  },
+  {
+   "shot": 12,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 60.0,
+   "rec_out": 65.0
+  },
+  {
+   "shot": 13,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 65.0,
+   "rec_out": 70.0
+  },
+  {
+   "shot": 14,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 70.0,
+   "rec_out": 75.0
+  },
+  {
+   "shot": 15,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 75.0,
+   "rec_out": 80.0
+  }
+ ],
+ "B": [
+  {
+   "shot": 0,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 0,
+   "rec_out": 5.0
+  },
+  {
+   "shot": 1,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 5.0,
+   "rec_out": 10.0
+  },
+  {
+   "shot": 2,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 10.0,
+   "rec_out": 15.0
+  },
+  {
+   "shot": 4,
+   "src_in": 2.5,
+   "src_out": 6.0,
+   "rec_in": 15.0,
+   "rec_out": 18.5
+  },
+  {
+   "shot": 5,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 18.5,
+   "rec_out": 23.5
+  },
+  {
+   "shot": 6,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 23.5,
+   "rec_out": 28.5
+  },
+  {
+   "shot": 7,
+   "src_in": 1.0,
+   "src_out": 4.0,
+   "rec_in": 28.5,
+   "rec_out": 31.5
+  },
+  {
+   "shot": 8,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "fx": "grade",
+   "rec_in": 31.5,
+   "rec_out": 36.5
+  },
+  {
+   "shot": 9,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 36.5,
+   "rec_out": 41.5
+  },
+  {
+   "shot": 12,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "fx": "grade",
+   "rec_in": 41.5,
+   "rec_out": 46.5
+  },
+  {
+   "shot": 11,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 46.5,
+   "rec_out": 51.5
+  },
+  {
+   "shot": 13,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 51.5,
+   "rec_out": 56.5
+  },
+  {
+   "shot": 14,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "fx": "reframe",
+   "rec_in": 56.5,
+   "rec_out": 61.5
+  },
+  {
+   "shot": 15,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 61.5,
+   "rec_out": 66.5
+  },
+  {
+   "shot": 16,
+   "src_in": 1.0,
+   "src_out": 6.0,
+   "rec_in": 66.5,
+   "rec_out": 71.5
+  },
+  {
+   "shot": 5,
+   "src_in": 1.5,
+   "src_out": 3.5,
+   "rec_in": 71.5,
+   "rec_out": 73.5
+  }
+ ],
+ "notes": [
+  {
+   "n": 0,
+   "frameA": 623,
+   "shot": 5,
+   "truth": [
+    467,
+    1727
+   ],
+   "kind": "ambiguous",
+   "fx": null
+  },
+  {
+   "n": 1,
+   "frameA": 293,
+   "shot": 2,
+   "truth": [
+    293
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 2,
+   "frameA": 1248,
+   "shot": 10,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 3,
+   "frameA": 143,
+   "shot": 1,
+   "truth": [
+    143
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 4,
+   "frameA": 1029,
+   "shot": 8,
+   "truth": [
+    825
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 5,
+   "frameA": 703,
+   "shot": 5,
+   "truth": [
+    547
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 6,
+   "frameA": 116,
+   "shot": 0,
+   "truth": [
+    116
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 7,
+   "frameA": 974,
+   "shot": 8,
+   "truth": [
+    770
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 8,
+   "frameA": 76,
+   "shot": 0,
+   "truth": [
+    76
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 9,
+   "frameA": 833,
+   "shot": 6,
+   "truth": [
+    677
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 10,
+   "frameA": 138,
+   "shot": 1,
+   "truth": [
+    138
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 11,
+   "frameA": 178,
+   "shot": 1,
+   "truth": [
+    178
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 12,
+   "frameA": 816,
+   "shot": 6,
+   "truth": [
+    660
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 13,
+   "frameA": 1584,
+   "shot": 13,
+   "truth": [
+    1260
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 14,
+   "frameA": 241,
+   "shot": 2,
+   "truth": [
+    241
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 15,
+   "frameA": 431,
+   "shot": 3,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 16,
+   "frameA": 1203,
+   "shot": 10,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 17,
+   "frameA": 1815,
+   "shot": 15,
+   "truth": [
+    1491
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 18,
+   "frameA": 1107,
+   "shot": 9,
+   "truth": [
+    903
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 19,
+   "frameA": 763,
+   "shot": 6,
+   "truth": [
+    607
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 20,
+   "frameA": 1870,
+   "shot": 15,
+   "truth": [
+    1546
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 21,
+   "frameA": 94,
+   "shot": 0,
+   "truth": [
+    94
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 22,
+   "frameA": 1645,
+   "shot": 13,
+   "truth": [
+    1321
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 23,
+   "frameA": 558,
+   "shot": 4,
+   "truth": [
+    402
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 24,
+   "frameA": 280,
+   "shot": 2,
+   "truth": [
+    280
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 25,
+   "frameA": 230,
+   "shot": 1,
+   "truth": [
+    230
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 26,
+   "frameA": 594,
+   "shot": 4,
+   "truth": [
+    438
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 27,
+   "frameA": 1564,
+   "shot": 13,
+   "truth": [
+    1240
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 28,
+   "frameA": 350,
+   "shot": 2,
+   "truth": [
+    350
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 29,
+   "frameA": 1116,
+   "shot": 9,
+   "truth": [
+    912
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 30,
+   "frameA": 1225,
+   "shot": 10,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 31,
+   "frameA": 716,
+   "shot": 5,
+   "truth": [
+    560
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 32,
+   "frameA": 1051,
+   "shot": 8,
+   "truth": [
+    847
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 33,
+   "frameA": 125,
+   "shot": 1,
+   "truth": [
+    125
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 34,
+   "frameA": 119,
+   "shot": 0,
+   "truth": [
+    119
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 35,
+   "frameA": 398,
+   "shot": 3,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 36,
+   "frameA": 1305,
+   "shot": 10,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 37,
+   "frameA": 822,
+   "shot": 6,
+   "truth": [
+    666
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 38,
+   "frameA": 605,
+   "shot": 5,
+   "truth": [
+    449
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 39,
+   "frameA": 1123,
+   "shot": 9,
+   "truth": [
+    919
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 40,
+   "frameA": 871,
+   "shot": 7,
+   "truth": [
+    715
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 41,
+   "frameA": 577,
+   "shot": 4,
+   "truth": [
+    421
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 42,
+   "frameA": 1522,
+   "shot": 12,
+   "truth": [
+    1078
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 43,
+   "frameA": 1340,
+   "shot": 11,
+   "truth": [
+    1136
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 44,
+   "frameA": 471,
+   "shot": 3,
+   "truth": [],
+   "kind": "removed",
+   "fx": null
+  },
+  {
+   "n": 45,
+   "frameA": 1102,
+   "shot": 9,
+   "truth": [
+    898
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 46,
+   "frameA": 1008,
+   "shot": 8,
+   "truth": [
+    804
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 47,
+   "frameA": 1677,
+   "shot": 13,
+   "truth": [
+    1353
+   ],
+   "kind": "same",
+   "fx": null
+  },
+  {
+   "n": 48,
+   "frameA": 490,
+   "shot": 4,
+   "truth": [],
+   "kind": "trimmed",
+   "fx": null
+  },
+  {
+   "n": 49,
+   "frameA": 509,
+   "shot": 4,
+   "truth": [],
+   "kind": "trimmed",
+   "fx": null
+  },
+  {
+   "n": 50,
+   "frameA": 926,
+   "shot": 7,
+   "truth": [],
+   "kind": "trimmed",
+   "fx": null
+  },
+  {
+   "n": 51,
+   "frameA": 948,
+   "shot": 7,
+   "truth": [],
+   "kind": "trimmed",
+   "fx": null
+  },
+  {
+   "n": 52,
+   "frameA": 624,
+   "shot": 5,
+   "truth": [
+    468,
+    1728
+   ],
+   "kind": "ambiguous",
+   "fx": null
+  },
+  {
+   "n": 53,
+   "frameA": 648,
+   "shot": 5,
+   "truth": [
+    492,
+    1752
+   ],
+   "kind": "ambiguous",
+   "fx": null
+  },
+  {
+   "n": 54,
+   "frameA": 1020,
+   "shot": 8,
+   "truth": [
+    816
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 55,
+   "frameA": 1464,
+   "shot": 12,
+   "truth": [
+    1020
+   ],
+   "kind": "graded",
+   "fx": "grade"
+  },
+  {
+   "n": 56,
+   "frameA": 1733,
+   "shot": 14,
+   "truth": [
+    1409
+   ],
+   "kind": "graded",
+   "fx": "reframe"
+  }
+ ]
+}

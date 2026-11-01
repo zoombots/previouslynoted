@@ -1,0 +1,37 @@
+# Previously Noted — Apache / LiteSpeed rules
+
+Options -Indexes
+DirectoryIndex index.php
+
+# Never serve the database, config or library code directly.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(data|lib)(/|$) - [F,L]
+  RewriteRule \.(sqlite|sqlite3|db|md|log)$ - [F,L,NC]
+</IfModule>
+
+<FilesMatch "\.(sqlite|sqlite3|db|md|log)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# Uploads of comment exports
+<IfModule mod_php.c>
+  php_value upload_max_filesize 64M
+  php_value post_max_size 72M
+  php_value memory_limit 256M
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "same-origin"
+</IfModule>
+
+# Icons and the web app manifest
+AddType application/manifest+json .webmanifest
+AddType image/svg+xml .svg
+AddType image/x-icon .ico
