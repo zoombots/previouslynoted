@@ -256,7 +256,7 @@ function place_by_transcript(int $f, array $segA, array $segB, float $hint, int 
 function place_carried_notes(int $versionId): ?array
 {
     $pdo = db();
-    $v = $pdo->prepare('SELECT * FROM versions WHERE id = ?');
+    $v = $pdo->prepare('SELECT * FROM versions WHERE id = ? AND workspace_id = ' . Ctx::wsId());
     $v->execute([$versionId]);
     $B = $v->fetch();
     if (!$B || !$B['carried_from']) {
@@ -363,8 +363,8 @@ function place_around(int $versionId): array
     if ($r = place_carried_notes($versionId)) {
         $results[$versionId] = $r;
     }
-    $st = db()->prepare('SELECT id FROM versions WHERE carried_from = ?');
-    $st->execute([$versionId]);
+    $st = db()->prepare('SELECT id FROM versions WHERE carried_from = ? AND workspace_id = ?');
+    $st->execute([$versionId, Ctx::wsId()]);
     foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $child) {
         if ($r = place_carried_notes((int)$child)) {
             $results[(int)$child] = $r;

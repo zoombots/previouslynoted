@@ -114,8 +114,8 @@ function import_csv_into_version(int $versionId, string $path, string $by): arra
     if (!$rows) {
         fail('The export has no comments in it.');
     }
-    $v = db()->prepare('SELECT tc_base FROM versions WHERE id = ?');
-    $v->execute([$versionId]);
+    $v = db()->prepare('SELECT tc_base FROM versions WHERE id = ? AND workspace_id = ?');
+    $v->execute([$versionId, Ctx::wsId()]);
     $found = detect_tc_base_start($rows);
     $base = $found[0] ?? (int)($v->fetchColumn() ?: 24);
     $start = $found ? $found[1] : null;
@@ -170,8 +170,8 @@ function import_csv_into_version(int $versionId, string $path, string $by): arra
 function import_comments(int $versionId, array $comments, int $base, string $fileUrl, string $sourceName, ?int $start = null): array
 {
     $pdo = db();
-    $v = $pdo->prepare('SELECT * FROM versions WHERE id = ?');
-    $v->execute([$versionId]);
+    $v = $pdo->prepare('SELECT * FROM versions WHERE id = ? AND workspace_id = ?');
+    $v->execute([$versionId, Ctx::wsId()]);
     $version = $v->fetch();
     if (!$version) {
         fail('That version no longer exists.', 404);
@@ -179,7 +179,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
     // Positions are counted from the start of the video, so changing the start only changes the timecode shown.
     $tcStart = $start ?? ((int)($version['tc_start'] ?? 0) ?: guess_tc_start(array_map(fn($c) => (int)$c['frame'], $comments), $base));
     if ($tcStart !== (int)($version['tc_start'] ?? 0)) {
-        $pdo->prepare('UPDATE versions SET tc_start = ? WHERE id = ?')->execute([$tcStart, $versionId]);
+        $pdo->prepare('UPDATE versions SET tc_start = ? WHERE id = ? AND workspace_id = ?')->execute([$tcStart, $versionId, Ctx::wsId()]);
     }
     foreach ($comments as &$c) {
         $c['frame'] = max(0, (int)$c['frame'] - $tcStart);
@@ -196,19 +196,19 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
 
     $pdo->beginTransaction();
     try {
-        $pdo->prepare('UPDATE versions SET tc_base = ? WHERE id = ?')->execute([$base, $versionId]);
+        $pdo->prepare('UPDATE versions SET tc_base = ? WHERE id = ? AND workspace_id = ?')->execute([$base, $versionId, Ctx::wsId()]);
 
-        $findNote = $pdo->prepare('SELECT id, text, tag FROM notes WHERE film_id = ? AND fio_comment_id = ?');
+        $findNote = $pdo->prepare('SELECT id, text, tag FROM notes WHERE film_id = ? AND fio_comment_id = ? AND workspace_id = ' . Ctx::wsId());
         $findPushed = $pdo->prepare('SELECT note_id FROM fio_pushed WHERE version_id = ? AND fio_comment_id = ?');
         $setComplete = $pdo->prepare('UPDATE positions SET fio_complete = ? WHERE note_id = ? AND version_id = ?');
         // A note imported earlier under another ID (CSV vs API): same author and text, same place in this version.
         $findSame = $pdo->prepare(
             'SELECT n.id, n.text, n.tag, p.frame FROM notes n JOIN positions p ON p.note_id = n.id AND p.version_id = ?
-             WHERE n.film_id = ? AND n.author = ? AND n.origin_version_id = ?'
+             WHERE n.film_id = ? AND n.author = ? AND n.origin_version_id = ? AND n.workspace_id = ' . Ctx::wsId()
         );
-        $adopt = $pdo->prepare('UPDATE notes SET fio_comment_id = ? WHERE id = ?');
-        $insNote = $pdo->prepare('INSERT INTO notes (film_id, origin_version_id, fio_comment_id, author, tag, text, created_at) VALUES (?,?,?,?,?,?,?)');
-        $updNote = $pdo->prepare('UPDATE notes SET text = ? WHERE id = ?');
+        $adopt = $pdo->prepare('UPDATE notes SET fio_comment_id = ? WHERE id = ? AND workspace_id = ' . Ctx::wsId());
+        $insNote = $pdo->prepare('INSERT INTO notes (workspace_id, film_id, origin_version_id, fio_comment_id, author, tag, text, created_at) VALUES (' . Ctx::wsId() . ',?,?,?,?,?,?,?)');
+        $updNote = $pdo->prepare('UPDATE notes SET text = ? WHERE id = ? AND workspace_id = ' . Ctx::wsId());
         $getPos = $pdo->prepare('SELECT * FROM positions WHERE note_id = ? AND version_id = ?');
         $insPos = $pdo->prepare("INSERT INTO positions (note_id, version_id, frame, end_frame, confirmed, fio_complete, method) VALUES (?,?,?,?,1,?,'import')");
         // A range from Frame.io wins; without one, an out-point set in the app moves with the note.
@@ -322,7 +322,7 @@ function import_comments(int $versionId, array $comments, int $base, string $fil
         }
 
         if ($fileUrl !== '' && empty($version['frameio_url'])) {
-            $pdo->prepare('UPDATE versions SET frameio_url = ? WHERE id = ?')->execute([$fileUrl, $versionId]);
+            $pdo->prepare('UPDATE versions SET frameio_url = ? WHERE id = ? AND workspace_id = ?')->execute([$fileUrl, $versionId, Ctx::wsId()]);
         }
         $pdo->commit();
     } catch (Throwable $e) {

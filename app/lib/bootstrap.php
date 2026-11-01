@@ -3,25 +3,26 @@ declare(strict_types=1);
 
 /*
  * Previously Noted — shared bootstrap: paths, config, session, database, helpers.
- * Requires PHP 8.1+ with pdo_sqlite.
+ * Requires PHP 8.1+ with pdo_mysql, and MariaDB 10.6+.
  */
 
 define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
-define('DB_FILE', DATA_DIR . '/notes.sqlite');
 define('APP_VERSION', '0.7.8');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
 function next_revision_color(PDO $pdo, int $filmId): string
 {
-    $st = $pdo->prepare('SELECT COUNT(*) FROM versions WHERE film_id = ?');
-    $st->execute([$filmId]);
+    $st = $pdo->prepare('SELECT COUNT(*) FROM versions WHERE film_id = ? AND workspace_id = ?');
+    $st->execute([$filmId, Ctx::wsId()]);
     return REVISION_COLORS[(int)$st->fetchColumn() % count(REVISION_COLORS)];
 }
 
+require_once __DIR__ . '/schema.php';
 require_once __DIR__ . '/users.php';
+require_once __DIR__ . '/tenancy.php';
 
 if (!function_exists('mb_strlen')) {
     function mb_strlen(string $s): int { return preg_match_all('/./us', $s); }
@@ -113,217 +114,41 @@ function db(): PDO
     if ($pdo) {
         return $pdo;
     }
-    if (!extension_loaded('pdo_sqlite')) {
-        throw new RuntimeException('The pdo_sqlite PHP extension is off. Turn it on in cPanel → Select PHP Version → Extensions.');
-    }
-    $pdo = new PDO('sqlite:' . DB_FILE, null, null, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-    $pdo->exec('PRAGMA foreign_keys = ON');
-    $pdo->exec('PRAGMA busy_timeout = 5000');
+    $pdo = db_connect(app_config()['db'] ?? []);
     migrate($pdo);
-    @chmod(DB_FILE, 0640);
     return $pdo;
 }
 
-function migrate(PDO $pdo): void
+/**
+ * Connect to MariaDB. $c: host, port, name, user, pass (and optionally socket).
+ * The session runs in ANSI mode, so "double quotes" are names and || joins text, as the queries were written.
+ */
+function db_connect(array $c): PDO
 {
-    $pdo->exec(<<<SQL
-CREATE TABLE IF NOT EXISTS films (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS versions (
-    id INTEGER PRIMARY KEY,
-    film_id INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    tc_base INTEGER NOT NULL DEFAULT 24,
-    rate REAL NOT NULL DEFAULT 24,
-    frameio_url TEXT,
-    video_url TEXT,
-    carried_from INTEGER REFERENCES versions(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY,
-    film_id INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-    origin_version_id INTEGER REFERENCES versions(id) ON DELETE SET NULL,
-    fio_comment_id TEXT,
-    author TEXT NOT NULL,
-    tag TEXT NOT NULL DEFAULT '',
-    text TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS notes_fio ON notes(film_id, fio_comment_id);
-CREATE TABLE IF NOT EXISTS positions (
-    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-    frame INTEGER NOT NULL,
-    confirmed INTEGER NOT NULL DEFAULT 1,
-    fio_complete INTEGER,
-    PRIMARY KEY (note_id, version_id)
-);
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY,
-    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-    version_id INTEGER REFERENCES versions(id) ON DELETE SET NULL,
-    status TEXT NOT NULL,
-    comment TEXT,
-    by_name TEXT NOT NULL,
-    at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS events_note ON events(note_id, id);
-CREATE TABLE IF NOT EXISTS replies (
-    id INTEGER PRIMARY KEY,
-    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-    version_id INTEGER REFERENCES versions(id) ON DELETE SET NULL,
-    author TEXT NOT NULL,
-    text TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'app'
-);
-CREATE INDEX IF NOT EXISTS replies_note ON replies(note_id, id);
-CREATE TABLE IF NOT EXISTS edits (
-    id INTEGER PRIMARY KEY,
-    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL,
-    format TEXT NOT NULL,
-    seq_name TEXT,
-    rate REAL NOT NULL,
-    start_frame INTEGER NOT NULL DEFAULT 0,
-    shot_count INTEGER NOT NULL DEFAULT 0,
-    warnings TEXT,
-    uploaded_by TEXT NOT NULL,
-    uploaded_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS shots (
-    edit_id INTEGER NOT NULL REFERENCES edits(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    track INTEGER NOT NULL,
-    rec_in INTEGER NOT NULL,
-    rec_out INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    file TEXT NOT NULL,
-    src_in REAL NOT NULL,
-    k REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS shots_edit ON shots(edit_id, kind, rec_in);
-CREATE TABLE IF NOT EXISTS transcripts (
-    id INTEGER PRIMARY KEY,
-    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL,
-    format TEXT NOT NULL,
-    offset_frames INTEGER NOT NULL DEFAULT 0,
-    segment_count INTEGER NOT NULL DEFAULT 0,
-    uploaded_by TEXT NOT NULL,
-    uploaded_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS segments (
-    transcript_id INTEGER NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,
-    start_frame INTEGER NOT NULL,
-    end_frame INTEGER NOT NULL,
-    speaker TEXT NOT NULL DEFAULT '',
-    text TEXT NOT NULL,
-    norm TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS segments_t ON segments(transcript_id, idx);
-SQL);
-    // 0.3: how each note's position in a version was decided.
-    $cols = array_column($pdo->query('PRAGMA table_info(positions)')->fetchAll(), 'name');
-    if (!in_array('method', $cols, true)) {
-        $pdo->exec("ALTER TABLE positions ADD COLUMN method TEXT NOT NULL DEFAULT 'manual'");
-        $pdo->exec("ALTER TABLE positions ADD COLUMN reason TEXT");
-        $pdo->exec("UPDATE positions SET method = 'carried' WHERE confirmed = 0");
-        $pdo->exec("UPDATE positions SET method = 'import' WHERE confirmed = 1 AND EXISTS (SELECT 1 FROM notes n WHERE n.id = positions.note_id AND n.origin_version_id = positions.version_id AND n.fio_comment_id IS NOT NULL)");
+    if (!extension_loaded('pdo_mysql')) {
+        throw new RuntimeException('The pdo_mysql PHP extension is off. Turn it on in cPanel → Select PHP Version → Extensions.');
     }
-    // 0.4: Frame.io links, transcription key terms, background jobs.
-    $vcols = array_column($pdo->query('PRAGMA table_info(versions)')->fetchAll(), 'name');
-    foreach (['fio_file_id' => 'TEXT', 'fio_stack_id' => 'TEXT', 'fio_name' => 'TEXT', 'fio_synced_at' => 'TEXT', 'fio_account_id' => 'TEXT'] as $col => $type) {
-        if (!in_array($col, $vcols, true)) {
-            $pdo->exec("ALTER TABLE versions ADD COLUMN $col $type");
-        }
+    if (empty($c['name']) || empty($c['user'])) {
+        throw new RuntimeException('The database isn’t set up. Run install.php again.');
     }
-    $fcols = array_column($pdo->query('PRAGMA table_info(films)')->fetchAll(), 'name');
-    if (!in_array('keyterms', $fcols, true)) {
-        $pdo->exec('ALTER TABLE films ADD COLUMN keyterms TEXT');
+    $dsn = !empty($c['socket'])
+        ? 'mysql:unix_socket=' . $c['socket'] . ';dbname=' . $c['name'] . ';charset=utf8mb4'
+        : 'mysql:host=' . ($c['host'] ?? 'localhost') . ';port=' . (int)($c['port'] ?? 3306) . ';dbname=' . $c['name'] . ';charset=utf8mb4';
+    try {
+        $pdo = new PDO($dsn, (string)$c['user'], (string)($c['pass'] ?? ''), [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_STRINGIFY_FETCHES => false,
+        ]);
+    } catch (PDOException $e) {
+        error_log('[previouslynoted] database: ' . $e->getMessage());
+        throw new RuntimeException('Couldn’t connect to the database. Check its name, user and password in cPanel → MySQL Databases.');
     }
-    $pdo->exec(<<<SQL
-CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY,
-    film_id INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
-    key TEXT NOT NULL,
-    label TEXT NOT NULL,
-    color TEXT NOT NULL,
-    kind TEXT NOT NULL DEFAULT 'picture',
-    sort INTEGER NOT NULL DEFAULT 0
-);
-CREATE UNIQUE INDEX IF NOT EXISTS categories_key ON categories(film_id, key);
-CREATE TABLE IF NOT EXISTS script_edits (
-    id INTEGER PRIMARY KEY,
-    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-    transcript_id INTEGER,
-    seg_idx INTEGER NOT NULL,
-    seg_norm TEXT NOT NULL DEFAULT '',
-    slot INTEGER NOT NULL DEFAULT 0,
-    state TEXT NOT NULL,
-    text TEXT NOT NULL DEFAULT '',
-    by_name TEXT NOT NULL,
-    at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS script_edits_v ON script_edits(version_id, id);
-CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY,
-    version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    message TEXT,
-    result TEXT,
-    created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-SQL);
-    $cols = array_column($pdo->query('PRAGMA table_info(positions)')->fetchAll(), 'name');
-    $vcols = array_column($pdo->query('PRAGMA table_info(versions)')->fetchAll(), 'name');
-    if (!in_array('tc_start', $vcols, true)) {
-        // The timecode of the video's first frame (Frame.io and edit suites often start at 01:00:00:00 or 10:00:00:00).
-        // Note positions stay counted from the start of the video; this only changes the timecode shown.
-        $pdo->exec('ALTER TABLE versions ADD COLUMN tc_start INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!in_array('color', $vcols, true)) {
-        // Revision colour, as script pages are colour-coded by draft: white, blue, pink, yellow, green, goldenrod…
-        // Existing versions get the sequence in the order they were made, per film.
-        $pdo->exec('ALTER TABLE versions ADD COLUMN color TEXT');
-        $set = $pdo->prepare('UPDATE versions SET color = ? WHERE id = ?');
-        $seq = [];
-        foreach ($pdo->query('SELECT id, film_id FROM versions ORDER BY film_id, id')->fetchAll() as $v) {
-            $i = $seq[$v['film_id']] = ($seq[$v['film_id']] ?? -1) + 1;
-            $set->execute([REVISION_COLORS[$i % count(REVISION_COLORS)], $v['id']]);
-        }
-    }
-    if (!in_array('end_frame', $cols, true)) {
-        // Optional out-point: the note covers frame..end_frame in that version.
-        $pdo->exec('ALTER TABLE positions ADD COLUMN end_frame INTEGER');
-    }
-    // Picture fingerprints of each version (the files live in data/fingerprints/).
-    $pdo->exec('CREATE TABLE IF NOT EXISTS fingerprints (
-        version_id INTEGER PRIMARY KEY REFERENCES versions(id) ON DELETE CASCADE,
-        bytes INTEGER NOT NULL, duration REAL NOT NULL, samples INTEGER NOT NULL,
-        source TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL)');
-    // Notes posted to a version's Frame.io file as comments (so a later sync doesn't bring them back as new notes).
-    $pdo->exec('CREATE TABLE IF NOT EXISTS fio_pushed (
-        note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-        version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
-        fio_comment_id TEXT NOT NULL, pushed_by TEXT NOT NULL, pushed_at TEXT NOT NULL,
-        PRIMARY KEY (note_id, version_id))');
-    // Edits to a note's wording, kept as history.
-    $pdo->exec('CREATE TABLE IF NOT EXISTS note_edits (
-        id INTEGER PRIMARY KEY, note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-        old_text TEXT NOT NULL, new_text TEXT NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
-    users_migrate($pdo);
+    $pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("SET SESSION sql_mode = 'ANSI_QUOTES,PIPES_AS_CONCAT,STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+    $pdo->exec("SET SESSION time_zone = '+00:00'");
+    return $pdo;
 }
 
 function now_iso(): string
@@ -367,11 +192,11 @@ const DEFAULT_CATEGORIES = [
 /** A film's note tracks, in order. Every film starts with Edit, Narration and Graphics. */
 function film_categories(int $filmId): array
 {
-    $st = db()->prepare('SELECT id, key, label, color, kind, sort FROM categories WHERE film_id = ? ORDER BY sort, id');
+    $st = db()->prepare('SELECT id, "key", label, color, kind, sort FROM categories WHERE film_id = ? ORDER BY sort, id');
     $st->execute([$filmId]);
     $rows = $st->fetchAll();
     if (!$rows) {
-        $ins = db()->prepare('INSERT OR IGNORE INTO categories (film_id, key, label, color, kind, sort) VALUES (?,?,?,?,?,?)');
+        $ins = db()->prepare('INSERT IGNORE INTO categories (film_id, "key", label, color, kind, sort) VALUES (?,?,?,?,?,?)');
         foreach (DEFAULT_CATEGORIES as $i => [$k, $l, $c, $kind]) {
             $ins->execute([$filmId, $k, $l, $c, $kind, $i]);
         }

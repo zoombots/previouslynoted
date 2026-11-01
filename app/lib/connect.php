@@ -4,8 +4,7 @@ declare(strict_types=1);
 /*
  * Connections to Frame.io (through Adobe server-to-server credentials) and ElevenLabs.
  *
- * Secrets live in data/connections.php, which the web server never serves.
- * They are never sent to the browser.
+ * Secrets live in the database, per company. They are never sent to the browser.
  */
 
 class ConnectError extends RuntimeException {}
@@ -18,32 +17,83 @@ final class FioHttpError extends ConnectError
     }
 }
 
-const CONN_FILE = DATA_DIR . '/connections.php';
-const FIO_TOKEN_FILE = DATA_DIR . '/frameio-token.json';
+/*
+ * Settings live in the settings table (docs/multitenant-rbac.md §4.1):
+ *   platform   outgoing email (smtp_*), and the service base URLs (*_base, for tests)
+ *   org:<id>   the company's Frame.io and ElevenLabs connection; its Frame.io sign-in tokens are 'fio_token'
+ * conn_reload() merges the platform scope with the scope of the company in this request (Ctx::$org).
+ */
+const PLATFORM_SETTING = '/^(smtp_|fio_base$|ims_base$|el_base$|fio_redirect_uri$)/';
 
-function conn_reload(): array
+function settings_scope_rows(string $scope): array
 {
-    $c = is_file(CONN_FILE) ? (require CONN_FILE) : [];
-    return is_array($c) ? $c : [];
+    $st = db()->prepare('SELECT name, value FROM settings WHERE scope = ?');
+    $st->execute([$scope]);
+    $out = [];
+    foreach ($st->fetchAll() as $r) {
+        $out[$r['name']] = json_decode((string)$r['value'], true);
+    }
+    return $out;
 }
 
-function conn_save(array $changes): array
+function settings_put(string $scope, array $changes): void
 {
-    $c = array_merge(conn_reload(), $changes);
-    foreach ($c as $k => $v) {
+    $set = db()->prepare('REPLACE INTO settings (scope, name, value) VALUES (?,?,?)');
+    $del = db()->prepare('DELETE FROM settings WHERE scope = ? AND name = ?');
+    foreach ($changes as $k => $v) {
         if ($v === null) {
-            unset($c[$k]);
+            $del->execute([$scope, $k]);
+        } else {
+            $set->execute([$scope, $k, json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)]);
         }
     }
-    $php = "<?php\n// Previously Noted connection settings. Keep this file private.\nreturn " . var_export($c, true) . ";\n";
-    if (file_put_contents(CONN_FILE, $php, LOCK_EX) === false) {
-        throw new ConnectError('Couldn’t save the connection settings. Check that the data folder is writable.');
+}
+
+function conn_org_scope(): ?string
+{
+    return Ctx::$org ? 'org:' . (int)Ctx::$org['id'] : null;
+}
+
+function conn_reload(bool $fresh = false): array
+{
+    static $cache = [];
+    $key = conn_org_scope() ?? '-';
+    if ($fresh || !isset($cache[$key])) {
+        $c = settings_scope_rows('platform');
+        if ($scope = conn_org_scope()) {
+            foreach (settings_scope_rows($scope) as $k => $v) {
+                if (!preg_match(PLATFORM_SETTING, $k) && $k !== 'fio_token') {
+                    $c[$k] = $v;
+                }
+            }
+        }
+        unset($c['schema'], $c['fio_token']);
+        $cache[$key] = $c;
     }
-    @chmod(CONN_FILE, 0640);
-    if (function_exists('opcache_invalidate')) {
-        @opcache_invalidate(CONN_FILE, true);
+    return $cache[$key];
+}
+
+/** Save settings: email and base URLs to the platform, everything else to the company in this request. */
+function conn_save(array $changes): array
+{
+    $platform = $org = [];
+    foreach ($changes as $k => $v) {
+        if (preg_match(PLATFORM_SETTING, $k)) {
+            $platform[$k] = $v;
+        } else {
+            $org[$k] = $v;
+        }
     }
-    return $c;
+    if ($org && !conn_org_scope()) {
+        throw new LogicException('Company settings need a company.');
+    }
+    if ($platform) {
+        settings_put('platform', $platform);
+    }
+    if ($org) {
+        settings_put(conn_org_scope(), $org);
+    }
+    return conn_reload(true);
 }
 
 function fio_base(): string { return rtrim(conn_reload()['fio_base'] ?? 'https://api.frame.io', '/'); }
@@ -132,15 +182,23 @@ function fio_mode(): string
 
 function fio_tokens(): array
 {
-    $t = is_file(FIO_TOKEN_FILE) ? json_decode((string)file_get_contents(FIO_TOKEN_FILE), true) : null;
+    $scope = conn_org_scope();
+    if (!$scope) {
+        return [];
+    }
+    $st = db()->prepare("SELECT value FROM settings WHERE scope = ? AND name = 'fio_token'");
+    $st->execute([$scope]);
+    $t = json_decode((string)$st->fetchColumn(), true);
     return is_array($t) && ($t['mode'] ?? 's2s') === fio_mode() ? $t : [];
 }
 
-function fio_save_tokens(array $t): void
+function fio_save_tokens(?array $t): void
 {
-    $t['mode'] = fio_mode();
-    file_put_contents(FIO_TOKEN_FILE, json_encode($t), LOCK_EX);
-    @chmod(FIO_TOKEN_FILE, 0640);
+    $scope = conn_org_scope() ?? throw new LogicException('Frame.io tokens need a company.');
+    if ($t !== null) {
+        $t['mode'] = fio_mode();
+    }
+    settings_put($scope, ['fio_token' => $t]);
 }
 
 function fio_configured(): bool
@@ -227,8 +285,9 @@ function fio_token(bool $fresh = false): string
             throw new ConnectError('Frame.io needs someone to sign in with Adobe. Open Settings and choose “Sign in with Adobe”.');
         }
         // One refresh at a time, so two requests don't race to swap the refresh token.
-        $lock = fopen(FIO_TOKEN_FILE . '.lock', 'c');
-        flock($lock, LOCK_EX);
+        $lockName = 'pn_fio_' . Ctx::orgId();
+        $got = db()->prepare('SELECT GET_LOCK(?, 30)');
+        $got->execute([$lockName]);
         try {
             $t = fio_tokens();
             if (!$fresh && ($t['expires_at'] ?? 0) > time() + 300 && !empty($t['access_token'])) {
@@ -251,8 +310,7 @@ function fio_token(bool $fresh = false): string
             fio_save_tokens($t);
             return $t['access_token'];
         } finally {
-            flock($lock, LOCK_UN);
-            fclose($lock);
+            db()->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
         }
     }
 

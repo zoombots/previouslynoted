@@ -47,8 +47,8 @@ function script_lines(int $versionId, int $transcriptId, array $segs): array
 /** Lines whose new wording turns up in a later cut's transcript have been recorded. */
 function script_recorded(int $versionId, array $lines): array
 {
-    $st = db()->prepare('SELECT id, label FROM versions WHERE carried_from = ? ORDER BY id');
-    $st->execute([$versionId]);
+    $st = db()->prepare('SELECT id, label FROM versions WHERE carried_from = ? AND workspace_id = ? ORDER BY id');
+    $st->execute([$versionId, Ctx::wsId()]);
     $later = [];
     foreach ($st->fetchAll() as $v) {
         if ($t = active_transcript((int)$v['id'])) {

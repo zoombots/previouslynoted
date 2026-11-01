@@ -23,10 +23,13 @@ if (!app_config()) {
     fail('Setup has not been completed.', 503);
 }
 start_session();
+$real = real_account();
 $me = current_account();
-if (!$me) {
+if (!$real || !$me) {
     fail('Your session has ended. Sign in again.', 401);
 }
+Ctx::$real = $real;
+Ctx::$user = $me;
 $user = $me['name'];
 
 $action = $_GET['action'] ?? '';
@@ -38,11 +41,17 @@ if ($method === 'POST') {
     }
     $isJson = str_starts_with($_SERVER['CONTENT_TYPE'] ?? '', 'application/json');
     $in = $isJson ? (json_decode(file_get_contents('php://input') ?: '{}', true) ?: []) : $_POST;
+    // The production the page is on travels in the query string.
+    if (!isset($in['ws']) && isset($_GET['ws'])) {
+        $in['ws'] = $_GET['ws'];
+    }
 } else {
     $in = $_GET;
 }
-// Release the session lock so long requests don't block other tabs.
-session_write_close();
+// Release the session lock so long requests don't block other tabs (starting and stopping impersonation write to it).
+if (!in_array($action, ['platform.impersonate', 'platform.impersonate.stop'], true)) {
+    session_write_close();
+}
 
 function int_in(array $in, string $k): int
 {
@@ -64,39 +73,127 @@ function str_in(array $in, string $k, int $max = 5000, bool $required = true): s
     return $v;
 }
 
+/** A version or note of this production (the helpers in lib/ use these names). */
 function version_row(int $id): array
 {
-    $st = db()->prepare('SELECT * FROM versions WHERE id = ?');
-    $st->execute([$id]);
-    return $st->fetch() ?: fail('That version no longer exists.', 404);
+    return scoped_version($id);
 }
 
 function note_row(int $id): array
 {
-    $st = db()->prepare('SELECT * FROM notes WHERE id = ?');
-    $st->execute([$id]);
-    return $st->fetch() ?: fail('That note no longer exists.', 404);
+    return scoped_note($id);
 }
 
 /*
- * Who may do what. Anything not listed here needs an editor.
- * Reading is open to everyone signed in.
+ * Every action, with what it works on and the role it needs (docs/multitenant-rbac.md §6):
+ *   self      your own account and the list of your productions
+ *   ws        production data; needs this role in the production (viewer < reviewer < editor < admin)
+ *   org       company management; needs this company role (member < admin < owner), platform admins count as owners
+ *   platform  Previously Noted staff: support or platform_admin
+ * Anything not listed is refused.
  */
-const ACTION_ROLES = [
-    // reviewers
-    'note.create' => 'reviewer', 'note.reply' => 'reviewer', 'note.edit' => 'reviewer', 'script.edit' => 'reviewer',
-    // admins
-    'version.delete' => 'admin', 'settings' => 'admin', 'settings.frameio' => 'admin', 'settings.frameio.clear' => 'admin',
-    'settings.elevenlabs' => 'admin', 'settings.elevenlabs.clear' => 'admin',
-    'settings.mail' => 'admin', 'settings.mail.clear' => 'admin', 'settings.mail.test' => 'admin',
-    'people' => 'admin', 'people.invite' => 'admin', 'people.update' => 'admin', 'people.link' => 'admin', 'people.delete' => 'admin',
-    // everyone
-    'account' => 'viewer', 'account.update' => 'viewer', 'account.password' => 'viewer',
+const ACTIONS = [
+    'GET account' => ['self', null], 'POST account.update' => ['self', null], 'POST account.password' => ['self', null],
+    'GET workspaces' => ['self', null], 'POST platform.impersonate.stop' => ['self', null],
+
+    'GET state' => ['ws', 'viewer'], 'GET notes' => ['ws', 'viewer'], 'GET fingerprint' => ['ws', 'viewer'],
+    'GET export.markers' => ['ws', 'viewer'], 'GET transcript' => ['ws', 'viewer'], 'GET script' => ['ws', 'viewer'],
+    'GET script.export' => ['ws', 'viewer'], 'GET version.media' => ['ws', 'viewer'], 'GET transcribe.status' => ['ws', 'viewer'],
+    'GET export' => ['ws', 'viewer'],
+    'POST note.create' => ['ws', 'reviewer'], 'POST note.reply' => ['ws', 'reviewer'], 'POST note.edit' => ['ws', 'reviewer'],
+    'POST script.edit' => ['ws', 'reviewer'],
+    'POST film.create' => ['ws', 'editor'], 'POST film.rename' => ['ws', 'editor'], 'POST film.update' => ['ws', 'editor'],
+    'POST version.create' => ['ws', 'editor'], 'POST version.update' => ['ws', 'editor'], 'POST version.import' => ['ws', 'editor'],
+    'POST note.status' => ['ws', 'editor'], 'POST note.tag' => ['ws', 'editor'], 'POST note.position' => ['ws', 'editor'],
+    'POST note.range' => ['ws', 'editor'], 'POST fingerprint.save' => ['ws', 'editor'], 'POST version.place_visual' => ['ws', 'editor'],
+    'POST version.tc_start' => ['ws', 'editor'], 'GET fio.push_preview' => ['ws', 'editor'], 'POST fio.push' => ['ws', 'editor'],
+    'POST version.edit' => ['ws', 'editor'], 'POST edit.start' => ['ws', 'editor'], 'POST version.place' => ['ws', 'editor'],
+    'POST version.transcript' => ['ws', 'editor'], 'POST transcript.delete' => ['ws', 'editor'], 'POST transcript.speaker' => ['ws', 'editor'],
+    'POST category.save' => ['ws', 'editor'], 'GET category.detect' => ['ws', 'editor'], 'POST category.adopt' => ['ws', 'editor'],
+    'POST category.delete' => ['ws', 'editor'], 'POST category.order' => ['ws', 'editor'],
+    'POST fio.resolve' => ['ws', 'editor'], 'GET fio.stack' => ['ws', 'editor'], 'POST version.link' => ['ws', 'editor'],
+    'POST version.unlink' => ['ws', 'editor'], 'POST version.sync' => ['ws', 'editor'],
+    'POST transcribe.create' => ['ws', 'editor'], 'POST transcribe.run' => ['ws', 'editor'],
+    'POST version.delete' => ['ws', 'admin'],
+    // People: production admins give access to people already in the company; inviting and company roles are checked
+    // again inside for company admins.
+    'GET people' => ['ws', 'admin'], 'POST people.update' => ['ws', 'admin'], 'POST people.invite' => ['ws', 'admin'],
+    'POST people.link' => ['ws', 'admin'], 'POST people.delete' => ['ws', 'admin'],
+
+    'GET settings' => ['org', 'admin'], 'POST settings.frameio' => ['org', 'admin'], 'POST settings.frameio.clear' => ['org', 'admin'],
+    'POST settings.elevenlabs' => ['org', 'admin'], 'POST settings.elevenlabs.clear' => ['org', 'admin'],
+    'GET company' => ['org', 'admin'], 'POST workspace.create' => ['org', 'admin'], 'POST workspace.update' => ['org', 'admin'],
+
+    'POST settings.mail' => ['platform', 'platform_admin'], 'POST settings.mail.test' => ['platform', 'platform_admin'],
+    'POST settings.mail.clear' => ['platform', 'platform_admin'],
+    'GET platform' => ['platform', 'support'], 'POST platform.impersonate' => ['platform', 'support'],
+    'POST platform.org.create' => ['platform', 'platform_admin'], 'POST platform.org.update' => ['platform', 'platform_admin'],
+    'POST platform.user.update' => ['platform', 'platform_admin'], 'POST platform.reset_link' => ['platform', 'platform_admin'],
 ];
-const READ_ACTIONS = ['export.markers', 'fingerprint', 'state', 'notes', 'transcript', 'script', 'script.export', 'version.media', 'transcribe.status', 'export'];
+
+const NO_ACCESS = 'That no longer exists, or you don’t have access to it.';
+
+/* ---------------- the gate ---------------- */
+[$class, $need] = ACTIONS["$method $action"] ?? fail('Unknown request.', 404);
+$wsParam = isset($in['ws']) && is_numeric($in['ws']) ? (int)$in['ws'] : null;
+if ($class === 'ws') {
+    $wsId = resolve_request_workspace($in);
+    if ($wsId === null) {
+        $wsId = $wsParam ?? fail('Choose a production first.');
+    } elseif ($wsParam !== null && $wsParam !== $wsId) {
+        fail('That belongs to another production. Reload the page and try again.');
+    }
+    $ws = ws_row($wsId);
+    $org = $ws ? org_row((int)$ws['org_id']) : null;
+    $role = $ws && $org ? ws_role($me, $ws, $org, $real) : null;
+    if ($role === null) {
+        fail(NO_ACCESS, 404);
+    }
+    Ctx::set($org, $ws, $role);
+    if (!role_at_least($role, $need)) {
+        $what = ['reviewer' => 'Viewers can look but not change anything.', 'editor' => 'Only editors and admins can do that.', 'admin' => 'Only admins can do that.'][$need];
+        fail($what . ($ws['status'] === 'archived' ? ' This production is archived, so it’s read-only.' : ' Ask an admin if you need more access.'), 403);
+    }
+} elseif ($class === 'org') {
+    $ws = null;
+    if (isset($in['workspace_id']) && is_numeric($in['workspace_id'])) {
+        $ws = ws_row((int)$in['workspace_id']);
+    } elseif (!isset($in['org_id']) && $wsParam !== null) {
+        $ws = ws_row($wsParam);
+    }
+    $orgId = $ws ? (int)$ws['org_id'] : (isset($in['org_id']) && is_numeric($in['org_id']) ? (int)$in['org_id'] : null);
+    $org = $orgId ? org_row($orgId) : null;
+    if (isset($in['org_id']) && $ws && (int)$in['org_id'] !== (int)$ws['org_id']) {
+        fail('That production belongs to another company.');
+    }
+    $power = $org ? org_power($me, $org, $real) : null;
+    if ($power === null || ($org['status'] !== 'active' && !is_platform($me))) {
+        fail(NO_ACCESS, 404);
+    }
+    Ctx::set($org, $ws, $ws ? ws_role($me, $ws, $org, $real) : null);
+    if (!org_power_at_least($power, $need) && !($method === 'GET' && $power === 'support')) {
+        fail('Only company admins can do that.', 403);
+    }
+} elseif ($class === 'platform') {
+    if (Ctx::impersonating()) {
+        fail('Stop impersonating first.', 403);
+    }
+    if (!is_platform($real, $need)) {
+        fail('Unknown request.', 404);
+    }
+}
+if (Ctx::impersonating() && $method === 'POST') {
+    if ($class === 'self' && $action !== 'platform.impersonate.stop') {
+        fail('You can’t change someone else’s account while impersonating them.', 403);
+    }
+    if ($action !== 'platform.impersonate.stop') {
+        audit('impersonated ' . $action, Ctx::$org ? Ctx::orgId() : null,
+            json_encode(array_intersect_key($in, array_flip(['ws', 'film_id', 'version_id', 'note_id', 'transcript_id', 'job_id', 'id'])), JSON_UNESCAPED_SLASHES));
+    }
+}
 
 /** Email an invite or reset link when asked and email is set up. Returns [sent, error message]. */
-function send_account_link(array $person, string $kind, string $link, string $expires, array $by, bool $wanted): array
+function send_account_link(array $person, string $kind, string $link, string $expires, ?array $by, bool $wanted): array
 {
     if (!$wanted || !mail_configured()) {
         return [false, null];
@@ -110,10 +207,36 @@ function send_account_link(array $person, string $kind, string $link, string $ex
     }
 }
 
-$need = ACTION_ROLES[$action] ?? ($method === 'GET' && in_array($action, READ_ACTIONS, true) ? 'viewer' : 'editor');
-if (!role_at_least($me, $need)) {
-    $what = ['reviewer' => 'Viewers can look but not change anything.', 'editor' => 'Only editors and admins can do that.', 'admin' => 'Only admins can do that.'][$need];
-    fail($what . ' Ask an admin if you need more access.', 403);
+/** A company member as the People list shows them, with their role in this production. */
+function member_public(array $r): array
+{
+    $orgWide = in_array($r['org_role'], ['owner', 'admin'], true);
+    return [
+        'id' => (int)$r['id'], 'name' => $r['name'], 'email' => $r['email'], 'org_role' => $r['org_role'],
+        'status' => $r['mstatus'], 'last_login' => $r['last_login'], 'joined_at' => $r['joined_at'],
+        'invite_pending' => $r['mstatus'] === 'invited' && (int)$r['token_expires'] > time(),
+        'ws_role' => $r['ws_role'], 'role' => $orgWide ? 'admin' : $r['ws_role'], 'org_wide' => $orgWide,
+        'has_password' => !empty($r['pass_hash']),
+    ];
+}
+
+function member_row(int $userId): ?array
+{
+    $st = db()->prepare(
+        "SELECT u.*, m.id AS mid, m.org_role, m.status AS mstatus, m.token_expires, m.joined_at, wa.role AS ws_role
+         FROM memberships m JOIN users u ON u.id = m.user_id
+         LEFT JOIN workspace_access wa ON wa.workspace_id = ? AND wa.user_id = u.id
+         WHERE m.org_id = ? AND m.user_id = ? AND m.status <> 'removed'"
+    );
+    $st->execute([Ctx::wsId(), Ctx::orgId(), $userId]);
+    return $st->fetch() ?: null;
+}
+
+/** The production as the page shows it in the header. */
+function ws_public(): array
+{
+    return ['id' => Ctx::wsId(), 'name' => Ctx::$ws['name'], 'status' => Ctx::$ws['status'], 'role' => Ctx::$role,
+        'org' => ['id' => Ctx::orgId(), 'name' => Ctx::$org['name']], 'company_role' => org_power(Ctx::$user, Ctx::$org, Ctx::$real)];
 }
 
 $pdo = db();
@@ -160,84 +283,136 @@ switch ("$method $action") {
         session_write_close();
         json_out(['ok' => true]);
 
-    /* ---------- people (admins) ---------- */
+    case 'GET workspaces':
+        json_out(['workspaces' => user_workspaces($me, $real), 'platform' => Ctx::impersonating() ? null : ($real['platform_role'] ?? null),
+            'impersonating' => Ctx::impersonating() ? user_public($me) : null]);
+
+    /* ---------- people: the company's members and their access to this production ---------- */
     case 'GET people':
-        $rows = $pdo->query("SELECT * FROM users ORDER BY CASE status WHEN 'disabled' THEN 1 ELSE 0 END, name COLLATE NOCASE")->fetchAll();
-        json_out(['people' => array_map('user_public', $rows), 'roles' => ROLE_LABELS, 'me' => (int)$me['id'], 'mail' => mail_configured() ? mail_settings()['from'] : null]);
+        $power = org_power($me, Ctx::$org, $real);
+        $st = $pdo->prepare(
+            "SELECT u.*, m.id AS mid, m.org_role, m.status AS mstatus, m.token_expires, m.joined_at, wa.role AS ws_role
+             FROM memberships m JOIN users u ON u.id = m.user_id
+             LEFT JOIN workspace_access wa ON wa.workspace_id = ? AND wa.user_id = u.id
+             WHERE m.org_id = ? AND m.status <> 'removed'
+             ORDER BY CASE m.status WHEN 'invited' THEN 1 ELSE 0 END, u.name"
+        );
+        $st->execute([Ctx::wsId(), Ctx::orgId()]);
+        json_out(['people' => array_map('member_public', $st->fetchAll()), 'roles' => ROLE_LABELS, 'org_roles' => ORG_ROLE_LABELS,
+            'me' => (int)$me['id'], 'company_role' => $power, 'can_company' => org_power_at_least($power, 'admin'),
+            'workspace' => ws_public(), 'mail' => mail_configured() ? mail_settings()['from'] : null]);
 
     case 'POST people.invite':
-        $role = (string)($in['role'] ?? 'reviewer');
-        $id = create_user((string)($in['name'] ?? ''), (string)($in['email'] ?? ''), $role, null);
-        $token = issue_token($id, 'invite');
-        $link = app_base_url() . '?invite=' . $token;
-        $person = user_by_id($id);
-        [$sent, $mailError] = send_account_link($person, 'invite', $link, INVITE_DAYS . ' days', $me, !empty($in['send']));
-        json_out(['ok' => true, 'person' => user_public($person), 'link' => $link, 'days' => INVITE_DAYS, 'sent' => $sent, 'mail_error' => $mailError]);
-
-    case 'POST people.link':
-        $u = user_by_id(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
-        if ($u['status'] === 'disabled') {
-            fail('Turn this account back on first.');
+        $power = org_power($me, Ctx::$org, $real);
+        if (!org_power_at_least($power, 'admin')) {
+            fail('Only company admins can invite people. Ask them, or give access to someone already in the company.', 403);
         }
-        $kind = $u['status'] === 'invited' ? 'invite' : 'reset';
-        $token = issue_token((int)$u['id'], $kind);
-        $link = app_base_url() . '?' . $kind . '=' . $token;
-        $expires = $kind === 'invite' ? INVITE_DAYS . ' days' : RESET_HOURS . ' hours';
-        [$sent, $mailError] = send_account_link($u, $kind, $link, $expires, $me, !empty($in['send']));
-        json_out(['ok' => true, 'kind' => $kind, 'link' => $link, 'expires' => $expires, 'person' => user_public(user_by_id((int)$u['id'])),
-            'sent' => $sent, 'mail_error' => $mailError]);
-
-    case 'POST people.update':
-        $u = user_by_id(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
-        $role = (string)($in['role'] ?? $u['role']);
-        $status = (string)($in['status'] ?? $u['status']);
-        if (!isset(ROLES[$role])) {
+        $orgRole = (string)($in['org_role'] ?? 'member');
+        if (!isset(ORG_ROLES[$orgRole])) {
+            fail('Unknown company role.');
+        }
+        if ($orgRole === 'owner' && $power !== 'owner') {
+            fail('Only owners can make someone an owner.', 403);
+        }
+        $wsRole = (string)($in['role'] ?? '');
+        if ($wsRole !== '' && !isset(ROLES[$wsRole])) {
             fail('Unknown role.');
         }
-        if ($status === 'active' && $u['status'] === 'invited') {
-            $status = 'invited'; // they still need to choose a password
+        $name = trim((string)($in['name'] ?? ''));
+        [$uid, $token] = invite_member(Ctx::orgId(), $name, (string)($in['email'] ?? ''), $orgRole, Ctx::wsId(), $wsRole ?: null, (int)$me['id']);
+        $link = app_base_url() . '?invite=' . $token;
+        $row = member_row($uid);
+        $person = ['email' => $row['email'], 'name' => $row['name'], 'org_name' => Ctx::$org['name'], 'has_password' => !empty($row['pass_hash']),
+            'role_label' => $orgRole !== 'member' ? ORG_ROLE_LABELS[$orgRole] : ($wsRole ? ROLE_LABELS[$wsRole] : '')];
+        [$sent, $mailError] = send_account_link($person, 'invite', $link, INVITE_DAYS . ' days', $me, !empty($in['send']));
+        json_out(['ok' => true, 'person' => member_public($row), 'link' => $link, 'days' => INVITE_DAYS, 'sent' => $sent, 'mail_error' => $mailError,
+            'existing' => !empty($row['pass_hash'])]);
+
+    case 'POST people.link':
+        if (!org_power_at_least(org_power($me, Ctx::$org, $real), 'admin')) {
+            fail('Only company admins can send invites.', 403);
         }
-        if (!in_array($status, ['invited', 'active', 'disabled'], true)) {
-            fail('Unknown account state.');
+        $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
+        if ($row['mstatus'] !== 'invited') {
+            fail('They’ve already joined. If they’ve forgotten their password, they can get a new one with “Forgot your password?” on the sign-in page.');
         }
-        if ($u['status'] === 'disabled' && $status !== 'disabled') {
-            $status = $u['pass_hash'] ? 'active' : 'invited';
+        $token = reissue_invite((int)$row['mid']);
+        $link = app_base_url() . '?invite=' . $token;
+        $person = ['email' => $row['email'], 'name' => $row['name'], 'org_name' => Ctx::$org['name'], 'has_password' => !empty($row['pass_hash']),
+            'role_label' => $row['org_role'] !== 'member' ? ORG_ROLE_LABELS[$row['org_role']] : ($row['ws_role'] ? ROLE_LABELS[$row['ws_role']] : '')];
+        [$sent, $mailError] = send_account_link($person, 'invite', $link, INVITE_DAYS . ' days', $me, !empty($in['send']));
+        json_out(['ok' => true, 'kind' => 'invite', 'link' => $link, 'expires' => INVITE_DAYS . ' days',
+            'person' => member_public(member_row((int)$row['id'])), 'sent' => $sent, 'mail_error' => $mailError]);
+
+    case 'POST people.update':
+        $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
+        $power = org_power($me, Ctx::$org, $real);
+        $pdo->beginTransaction();
+        if (array_key_exists('role', $in)) {
+            // Access to this production: production admins can change it for anyone in the company.
+            $r = (string)($in['role'] ?? '');
+            if ($r !== '' && !isset(ROLES[$r])) {
+                fail('Unknown role.');
+            }
+            set_ws_access(Ctx::wsId(), (int)$row['id'], $r ?: null);
         }
-        $losesAdmin = $u['role'] === 'admin' && $u['status'] === 'active' && ($role !== 'admin' || $status !== 'active');
-        if ($losesAdmin && active_admins() <= 1) {
-            fail('Keep at least one active admin. Make someone else an admin first.');
+        if (isset($in['org_role']) && $in['org_role'] !== $row['org_role']) {
+            $new = (string)$in['org_role'];
+            if (!isset(ORG_ROLES[$new])) {
+                fail('Unknown company role.');
+            }
+            if (!org_power_at_least($power, 'admin')) {
+                fail('Only company admins can change company roles.', 403);
+            }
+            if (($new === 'owner' || $row['org_role'] === 'owner') && $power !== 'owner') {
+                fail('Only owners can make someone an owner, or change an owner’s role.', 403);
+            }
+            if ($row['org_role'] === 'owner' && $row['mstatus'] === 'active' && active_owners(Ctx::orgId()) <= 1) {
+                fail('Keep at least one owner. Make someone else an owner first.');
+            }
+            $pdo->prepare('UPDATE memberships SET org_role = ? WHERE id = ?')->execute([$new, $row['mid']]);
         }
-        $name = isset($in['name']) ? trim((string)$in['name']) : $u['name'];
-        if ($name === '' || mb_strlen($name) > 60) {
-            fail('Enter a name (up to 60 characters).');
-        }
-        $pdo->prepare('UPDATE users SET role = ?, status = ?, name = ?, epoch = epoch + ?, locked_until = CASE WHEN ? THEN 0 ELSE locked_until END,
-                failed = CASE WHEN ? THEN 0 ELSE failed END WHERE id = ?')
-            ->execute([$role, $status, $name, $status === 'disabled' ? 1 : 0, !empty($in['unlock']) ? 1 : 0, !empty($in['unlock']) ? 1 : 0, $u['id']]);
-        json_out(['ok' => true, 'person' => user_public(user_by_id((int)$u['id']))]);
+        $pdo->commit();
+        json_out(['ok' => true, 'person' => member_public(member_row((int)$row['id']))]);
 
     case 'POST people.delete':
-        $u = user_by_id(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
-        if ((int)$u['id'] === (int)$me['id']) {
-            fail('You can’t remove your own account.');
+        // Take someone out of the company (their account and their other companies stay). Their notes stay too.
+        $power = org_power($me, Ctx::$org, $real);
+        if (!org_power_at_least($power, 'admin')) {
+            fail('Only company admins can remove people from the company. You can take away their access to this production instead.', 403);
         }
-        if ($u['role'] === 'admin' && $u['status'] === 'active' && active_admins() <= 1) {
-            fail('Keep at least one active admin.');
+        $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
+        if ((int)$row['id'] === (int)$me['id']) {
+            fail('You can’t remove yourself.');
         }
-        $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$u['id']]);
+        if ($row['org_role'] === 'owner' && $power !== 'owner') {
+            fail('Only owners can remove an owner.', 403);
+        }
+        if ($row['org_role'] === 'owner' && $row['mstatus'] === 'active' && active_owners(Ctx::orgId()) <= 1) {
+            fail('Keep at least one owner.');
+        }
+        $pdo->beginTransaction();
+        $pdo->prepare("UPDATE memberships SET status = 'removed', token_hash = NULL, token_expires = NULL WHERE id = ?")->execute([$row['mid']]);
+        $pdo->prepare('DELETE wa FROM workspace_access wa JOIN workspaces w ON w.id = wa.workspace_id WHERE w.org_id = ? AND wa.user_id = ?')
+            ->execute([Ctx::orgId(), $row['id']]);
+        $pdo->commit();
         json_out(['ok' => true]);
 
     case 'GET state':
-        $films = $pdo->query('SELECT id, name FROM films ORDER BY id')->fetchAll();
-        $versions = $pdo->query(
+        $ws = Ctx::wsId();
+        $st = $pdo->prepare(
             'SELECT v.id, v.film_id, v.label, v.color, v.tc_base, v.tc_start, v.rate, v.frameio_url, v.video_url, v.carried_from,
                     v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id,
                     (SELECT COUNT(*) FROM positions p WHERE p.version_id = v.id) AS note_count,
                     (SELECT COUNT(*) FROM transcripts t WHERE t.version_id = v.id) AS transcript_count
-             FROM versions v ORDER BY v.film_id, v.id'
-        )->fetchAll();
+             FROM versions v WHERE v.workspace_id = ? ORDER BY v.film_id, v.id'
+        );
+        $st->execute([$ws]);
+        $versions = $st->fetchAll();
         $fps = [];
-        foreach ($pdo->query('SELECT version_id, created_at, source FROM fingerprints') as $f) {
+        $st = $pdo->prepare('SELECT f.version_id, f.created_at, f.source FROM fingerprints f JOIN versions v ON v.id = f.version_id WHERE v.workspace_id = ?');
+        $st->execute([$ws]);
+        foreach ($st as $f) {
             $fps[(int)$f['version_id']] = ['at' => $f['created_at'], 'source' => $f['source']];
         }
         foreach ($versions as &$vv) {
@@ -247,26 +422,29 @@ switch ("$method $action") {
                 'start_tc' => frames_to_tc((int)$e['start_frame'], max(1, (int)round((float)$e['rate']))), 'uploaded_at' => $e['uploaded_at']] : null;
         }
         unset($vv);
-        $films = $pdo->query('SELECT id, name, keyterms FROM films ORDER BY id')->fetchAll();
+        $st = $pdo->prepare('SELECT id, name, keyterms FROM films WHERE workspace_id = ? ORDER BY id');
+        $st->execute([$ws]);
+        $films = $st->fetchAll();
         foreach ($films as &$fm) {
             $fm['categories'] = film_categories((int)$fm['id']);
         }
         unset($fm);
-        json_out(['user' => $user, 'me' => user_public($me), 'films' => $films, 'versions' => $versions, 'statuses' => STATUSES,
+        json_out(['user' => $user, 'me' => user_public($me), 'workspace' => ws_public(), 'films' => $films, 'versions' => $versions, 'statuses' => STATUSES,
             'connections' => ['frameio' => fio_configured() && !empty(conn_reload()['fio_account_id']), 'elevenlabs' => el_configured(),
                 'mail' => mail_configured() ? conn_reload()['smtp_from'] : null]]);
 
     case 'POST film.create':
         $name = str_in($in, 'name', 200);
-        $pdo->prepare('INSERT INTO films (name, created_at) VALUES (?, ?)')->execute([$name, now_iso()]);
+        $pdo->prepare('INSERT INTO films (workspace_id, name, created_at) VALUES (?, ?, ?)')->execute([Ctx::wsId(), $name, now_iso()]);
         json_out(['id' => (int)$pdo->lastInsertId()]);
 
     case 'POST film.rename':
-        $pdo->prepare('UPDATE films SET name = ? WHERE id = ?')->execute([str_in($in, 'name', 200), int_in($in, 'film_id')]);
+        $film = scoped_film(int_in($in, 'film_id'));
+        $pdo->prepare('UPDATE films SET name = ? WHERE id = ? AND workspace_id = ?')->execute([str_in($in, 'name', 200), $film['id'], Ctx::wsId()]);
         json_out(['ok' => true]);
 
     case 'POST version.create':
-        $filmId = int_in($in, 'film_id');
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $label = str_in($in, 'label', 200);
         $from = isset($in['carry_from']) && $in['carry_from'] !== '' && $in['carry_from'] !== null ? (int)$in['carry_from'] : null;
         $tcBase = 24;
@@ -283,13 +461,11 @@ switch ("$method $action") {
         $fioFile = preg_match('/^[0-9a-f-]{36}$/i', (string)($in['fio_file_id'] ?? '')) ? strtolower($in['fio_file_id']) : null;
         $parentAcc = null;
         if ($from && $fioFile) {
-            $pa = $pdo->prepare('SELECT fio_account_id FROM versions WHERE id = ?');
-            $pa->execute([$from]);
-            $parentAcc = $pa->fetchColumn() ?: null;
+            $parentAcc = $src['fio_account_id'] ?: null;
         }
         $color = in_array($in['color'] ?? '', REVISION_COLORS, true) ? $in['color'] : next_revision_color($pdo, $filmId);
-        $pdo->prepare('INSERT INTO versions (film_id, label, tc_base, rate, carried_from, created_at, fio_file_id, fio_stack_id, fio_name, fio_account_id, color) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-            ->execute([$filmId, $label, $tcBase, $rate, $from, now_iso(), $fioFile,
+        $pdo->prepare('INSERT INTO versions (workspace_id, film_id, label, tc_base, rate, carried_from, created_at, fio_file_id, fio_stack_id, fio_name, fio_account_id, color) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+            ->execute([Ctx::wsId(), $filmId, $label, $tcBase, $rate, $from, now_iso(), $fioFile,
                 $fioFile && preg_match('/^[0-9a-f-]{36}$/i', (string)($in['fio_stack_id'] ?? '')) ? strtolower($in['fio_stack_id']) : null,
                 $fioFile ? mb_substr((string)($in['fio_name'] ?? ''), 0, 300) : null, $parentAcc, $color]);
         $vid = (int)$pdo->lastInsertId();
@@ -356,7 +532,8 @@ switch ("$method $action") {
             fail('Nothing to change.');
         }
         $vals[] = $vid;
-        $pdo->prepare('UPDATE versions SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($vals);
+        $vals[] = Ctx::wsId();
+        $pdo->prepare('UPDATE versions SET ' . implode(', ', $fields) . ' WHERE id = ? AND workspace_id = ?')->execute($vals);
         json_out(['ok' => true]);
 
     case 'POST version.delete':
@@ -365,16 +542,16 @@ switch ("$method $action") {
         $pdo->beginTransaction();
         // Notes that were first raised on this version and appear nowhere else go with it.
         $pdo->prepare(
-            'DELETE FROM notes WHERE origin_version_id = ?
+            'DELETE FROM notes WHERE origin_version_id = ? AND workspace_id = ?
                AND NOT EXISTS (SELECT 1 FROM positions p WHERE p.note_id = notes.id AND p.version_id <> ?)'
-        )->execute([$vid, $vid]);
-        $pdo->prepare('DELETE FROM versions WHERE id = ?')->execute([$vid]);
+        )->execute([$vid, Ctx::wsId(), $vid]);
+        $pdo->prepare('DELETE FROM versions WHERE id = ? AND workspace_id = ?')->execute([$vid, Ctx::wsId()]);
         $pdo->commit();
         @unlink(DATA_DIR . "/fingerprints/$vid.bin");
         json_out(['ok' => true]);
 
     case 'POST version.import':
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $f = $_FILES['csv'] ?? null;
         if (!$f || $f['error'] !== UPLOAD_ERR_OK) {
             fail('Choose a Frame.io comment export (.csv) to import.');
@@ -471,8 +648,8 @@ switch ("$method $action") {
             $tag = clean_tag((string)$in['tag'], $keys);
         }
         $pdo->beginTransaction();
-        $pdo->prepare('INSERT INTO notes (film_id, origin_version_id, author, tag, text, created_at) VALUES (?,?,?,?,?,?)')
-            ->execute([(int)$version['film_id'], $vid, $user, $tag, $text, now_iso()]);
+        $pdo->prepare('INSERT INTO notes (workspace_id, film_id, origin_version_id, author, tag, text, created_at) VALUES (?,?,?,?,?,?,?)')
+            ->execute([Ctx::wsId(), (int)$version['film_id'], $vid, $user, $tag, $text, now_iso()]);
         $nid = (int)$pdo->lastInsertId();
         $pdo->prepare("INSERT INTO positions (note_id, version_id, frame, confirmed, method) VALUES (?,?,?,1,'manual')")->execute([$nid, $vid, $frame]);
         add_event($nid, $vid, 'open', null, $user);
@@ -482,14 +659,14 @@ switch ("$method $action") {
     case 'POST note.status':
         $nid = int_in($in, 'note_id');
         note_row($nid);
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         add_event($nid, $vid, str_in($in, 'status', 20), str_in($in, 'comment', 5000, false), $user);
         json_out(['ok' => true]);
 
     case 'POST note.reply':
         $nid = int_in($in, 'note_id');
         note_row($nid);
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $pdo->prepare("INSERT INTO replies (note_id, version_id, author, text, created_at, source) VALUES (?,?,?,?,?,'app')")
             ->execute([$nid, $vid, $user, str_in($in, 'text', 5000), now_iso()]);
         json_out(['ok' => true]);
@@ -498,12 +675,12 @@ switch ("$method $action") {
         $nid = int_in($in, 'note_id');
         $note = note_row($nid);
         $tag = clean_tag((string)($in['tag'] ?? ''), film_keys((int)$note['film_id']));
-        $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ?')->execute([$tag, $nid]);
+        $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ? AND workspace_id = ?')->execute([$tag, $nid, Ctx::wsId()]);
         json_out(['ok' => true]);
 
     case 'POST note.position':
-        $nid = int_in($in, 'note_id');
-        $vid = int_in($in, 'version_id');
+        $nid = (int)note_row(int_in($in, 'note_id'))['id'];
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $frame = max(0, int_in($in, 'frame'));
         $upd = $pdo->prepare("UPDATE positions SET end_frame = CASE WHEN end_frame IS NULL THEN NULL ELSE end_frame - frame + ? END,
             frame = ?, confirmed = 1, method = 'manual' WHERE note_id = ? AND version_id = ?");
@@ -545,12 +722,12 @@ switch ("$method $action") {
         if (file_put_contents("$dir/$vid.bin", gzencode($raw, 6), LOCK_EX) === false) {
             fail('Couldn’t save the fingerprint. Check that the data folder is writable.', 500);
         }
-        $pdo->prepare('INSERT OR REPLACE INTO fingerprints (version_id, bytes, duration, samples, source, created_by, created_at) VALUES (?,?,?,?,?,?,?)')
+        $pdo->prepare('REPLACE INTO fingerprints (version_id, bytes, duration, samples, source, created_by, created_at) VALUES (?,?,?,?,?,?,?)')
             ->execute([$vid, strlen($raw), (float)$head['dur'], (int)$head['n'], mb_substr((string)($in['source'] ?? ''), 0, 200), $user, now_iso()]);
         json_out(['ok' => true, 'at' => now_iso()]);
 
     case 'GET fingerprint':
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $file = DATA_DIR . "/fingerprints/$vid.bin";
         if (!is_file($file)) {
             fail('This version hasn’t been fingerprinted yet.', 404);
@@ -626,11 +803,12 @@ switch ("$method $action") {
         }
         $old = (int)$version['tc_start'];
         $pdo->beginTransaction();
-        $pdo->prepare('UPDATE versions SET tc_start = ? WHERE id = ?')->execute([$new, $vid]);
+        $pdo->prepare('UPDATE versions SET tc_start = ? WHERE id = ? AND workspace_id = ?')->execute([$new, $vid, Ctx::wsId()]);
         $moved = 0;
         if (!empty($in['move_notes']) && $new !== $old) {
             $d = $new - $old;
-            $st = $pdo->prepare('UPDATE positions SET frame = MAX(0, frame - ?), end_frame = CASE WHEN end_frame IS NULL THEN NULL ELSE MAX(1, end_frame - ?) END WHERE version_id = ?');
+            // end_frame first: MariaDB applies the assignments in order, so it must still see the old frame.
+            $st = $pdo->prepare('UPDATE positions SET end_frame = CASE WHEN end_frame IS NULL THEN NULL ELSE GREATEST(1, end_frame - ?) END, frame = GREATEST(0, frame - ?) WHERE version_id = ?');
             $st->execute([$d, $d, $vid]);
             $moved = $st->rowCount();
         }
@@ -641,7 +819,7 @@ switch ("$method $action") {
         // Reword a note. Editors and admins can reword any note; reviewers only their own.
         $nid = int_in($in, 'note_id');
         $note = note_row($nid);
-        if (!role_at_least($me, 'editor') && $note['author'] !== $me['name']) {
+        if (!role_at_least(Ctx::$role, 'editor') && $note['author'] !== $me['name']) {
             fail('Reviewers can reword only their own notes. Reply to this one instead, or ask an editor.', 403);
         }
         $text = trim((string)($in['text'] ?? ''));
@@ -655,7 +833,7 @@ switch ("$method $action") {
             $pdo->beginTransaction();
             $pdo->prepare('INSERT INTO note_edits (note_id, old_text, new_text, by_name, at) VALUES (?,?,?,?,?)')
                 ->execute([$nid, $note['text'], $text, $user, now_iso()]);
-            $pdo->prepare('UPDATE notes SET text = ? WHERE id = ?')->execute([$text, $nid]);
+            $pdo->prepare('UPDATE notes SET text = ? WHERE id = ? AND workspace_id = ?')->execute([$text, $nid, Ctx::wsId()]);
             $pdo->commit();
         }
         json_out(['ok' => true, 'text' => $text]);
@@ -724,7 +902,7 @@ switch ("$method $action") {
             $all[(int)$n['id']] = $n;
         }
         $first = !(int)$pdo->query('SELECT COUNT(*) FROM fio_pushed WHERE version_id = ' . $vid)->fetchColumn();
-        $ins = $pdo->prepare('INSERT OR REPLACE INTO fio_pushed (note_id, version_id, fio_comment_id, pushed_by, pushed_at) VALUES (?,?,?,?,?)');
+        $ins = $pdo->prepare('REPLACE INTO fio_pushed (note_id, version_id, fio_comment_id, pushed_by, pushed_at) VALUES (?,?,?,?,?)');
         $posted = 0;
         $errors = [];
         foreach ($ids as $id) {
@@ -772,8 +950,8 @@ switch ("$method $action") {
 
     case 'POST note.range':
         // Set or clear a note's out-point in one version. end = null (or not after the in-point) clears it.
-        $nid = int_in($in, 'note_id');
-        $vid = int_in($in, 'version_id');
+        $nid = (int)note_row(int_in($in, 'note_id'))['id'];
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $st = $pdo->prepare('SELECT frame FROM positions WHERE note_id = ? AND version_id = ?');
         $st->execute([$nid, $vid]);
         $at = $st->fetchColumn();
@@ -808,7 +986,7 @@ switch ("$method $action") {
 
     case 'POST edit.start':
         // The record timecode the uploaded video starts at (EDLs usually begin at 01:00:00:00).
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $edit = active_edit($vid) ?? fail('This version has no edit yet.', 404);
         $base = max(1, (int)round((float)$edit['rate']));
         $new = tc_to_frames(str_in($in, 'start_tc', 20), $base);
@@ -845,8 +1023,8 @@ switch ("$method $action") {
 
     case 'POST transcript.delete':
         $tid = int_in($in, 'transcript_id');
-        $st = $pdo->prepare('SELECT version_id FROM transcripts WHERE id = ?');
-        $st->execute([$tid]);
+        $st = $pdo->prepare('SELECT t.version_id FROM transcripts t JOIN versions v ON v.id = t.version_id WHERE t.id = ? AND v.workspace_id = ?');
+        $st->execute([$tid, Ctx::wsId()]);
         $vid = $st->fetchColumn() ?: fail('That transcript no longer exists.', 404);
         $pdo->prepare('DELETE FROM transcripts WHERE id = ?')->execute([$tid]);
         json_out(['ok' => true, 'placement' => place_around((int)$vid)]);
@@ -936,7 +1114,7 @@ switch ("$method $action") {
             $slot = max(1, $slot);
         }
         $slot = (int)$slot;
-        if (!role_at_least($me, 'editor')) {
+        if (!role_at_least(Ctx::$role, 'editor')) {
             $cur = script_lines($vid, $tid, $segs)[$i . ':' . $slot]['state'] ?? 'same';
             if ($state !== 'draft' || in_array($cur, ['approved', 'cut'], true)) {
                 fail('Reviewers can suggest new wording as a draft. Approving, cutting or changing an approved line is for editors.', 403);
@@ -954,7 +1132,7 @@ switch ("$method $action") {
         $segs = transcript_segments((int)$t['id']);
         $lines = script_lines($vid, (int)$t['id'], $segs);
         $base = (int)$v['tc_base'];
-        $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
+        $film = scoped_film((int)$v['film_id'])['name'];
         $fname = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label']);
         $rows = [];
         foreach ($segs as $i => $s) {
@@ -1005,7 +1183,7 @@ switch ("$method $action") {
     /* ---------------- Tracks (note categories) ---------------- */
 
     case 'POST category.save':
-        $filmId = int_in($in, 'film_id');
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $cats = film_categories($filmId);
         $key = strtoupper(trim((string)($in['key'] ?? '')));
         if (!preg_match('/^[A-Z][A-Z0-9]{0,7}$/', $key)) {
@@ -1023,20 +1201,20 @@ switch ("$method $action") {
         $pdo->beginTransaction();
         if ($id) {
             $old = array_values(array_filter($cats, fn($c) => $c['id'] === $id))[0] ?? fail('That track no longer exists.', 404);
-            $pdo->prepare('UPDATE categories SET key = ?, label = ?, color = ?, kind = ? WHERE id = ? AND film_id = ?')->execute([$key, $label, $color, $kind, $id, $filmId]);
+            $pdo->prepare('UPDATE categories SET "key" = ?, label = ?, color = ?, kind = ? WHERE id = ? AND film_id = ?')->execute([$key, $label, $color, $kind, $id, $filmId]);
             if ($old['key'] !== $key) {
                 // Notes keep their track when its code changes.
-                $notes = $pdo->prepare("SELECT id, tag FROM notes WHERE film_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ?)");
-                $notes->execute([$filmId, $old['key'], $old['key'] . '-%', '%-' . $old['key']]);
-                $upd = $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ?');
+                $notes = $pdo->prepare("SELECT id, tag FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ?)");
+                $notes->execute([$filmId, Ctx::wsId(), $old['key'], $old['key'] . '-%', '%-' . $old['key']]);
+                $upd = $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ? AND workspace_id = ?');
                 foreach ($notes as $n) {
                     $parts = array_map(fn($p) => $p === $old['key'] ? $key : $p, explode('-', $n['tag']));
-                    $upd->execute([implode('-', $parts), $n['id']]);
+                    $upd->execute([implode('-', $parts), $n['id'], Ctx::wsId()]);
                 }
             }
         } else {
             $sort = $cats ? max(array_column($cats, 'sort')) + 1 : 0;
-            $pdo->prepare('INSERT INTO categories (film_id, key, label, color, kind, sort) VALUES (?,?,?,?,?,?)')->execute([$filmId, $key, $label, $color, $kind, $sort]);
+            $pdo->prepare('INSERT INTO categories (film_id, "key", label, color, kind, sort) VALUES (?,?,?,?,?,?)')->execute([$filmId, $key, $label, $color, $kind, $sort]);
             $id = (int)$pdo->lastInsertId();
         }
         $pdo->commit();
@@ -1044,14 +1222,14 @@ switch ("$method $action") {
 
     case 'GET category.detect':
         // Codes the film's untagged notes start with.
-        $filmId = int_in($in, 'film_id');
-        $st = $pdo->prepare("SELECT text FROM notes WHERE film_id = ? AND (tag IS NULL OR tag = '')");
-        $st->execute([$filmId]);
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
+        $st = $pdo->prepare("SELECT text FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag IS NULL OR tag = '')");
+        $st->execute([$filmId, Ctx::wsId()]);
         $codes = detect_codes($st->fetchAll(PDO::FETCH_COLUMN), film_keys($filmId));
         $used = [];
         foreach (film_categories($filmId) as $c) {
-            $n = $pdo->prepare("SELECT COUNT(*) FROM notes WHERE film_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ? OR tag LIKE ?)");
-            $n->execute([$filmId, $c['key'], $c['key'] . '-%', '%-' . $c['key'], '%-' . $c['key'] . '-%']);
+            $n = $pdo->prepare("SELECT COUNT(*) FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ? OR tag LIKE ?)");
+            $n->execute([$filmId, Ctx::wsId(), $c['key'], $c['key'] . '-%', '%-' . $c['key'], '%-' . $c['key'] . '-%']);
             $used[$c['key']] = (int)$n->fetchColumn();
         }
         json_out(['codes' => array_map(fn($c, $n) => ['code' => (string)$c, 'count' => $n, 'label' => code_label((string)$c)], array_keys($codes), $codes),
@@ -1060,7 +1238,7 @@ switch ("$method $action") {
     case 'POST category.adopt':
         // Create a track for each chosen code, put the matching untagged notes on it, and (optionally) remove the
         // starter tracks E, N and A when no note uses them.
-        $filmId = int_in($in, 'film_id');
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $want = is_array($in['codes'] ?? null) ? $in['codes'] : [];
         $cats = film_categories($filmId);
         $have = array_column($cats, 'key');
@@ -1077,19 +1255,19 @@ switch ("$method $action") {
             $color = $free[0] ?? CATEGORY_COLORS[count($created) % count(CATEGORY_COLORS)];
             $usedColors[] = $color;
             $label = mb_substr(trim((string)($w['label'] ?? '')) ?: code_label($code), 0, 40);
-            $pdo->prepare('INSERT INTO categories (film_id, key, label, color, kind, sort) VALUES (?,?,?,?,?,?)')->execute([$filmId, $code, $label, $color, 'picture', $sort++]);
+            $pdo->prepare('INSERT INTO categories (film_id, "key", label, color, kind, sort) VALUES (?,?,?,?,?,?)')->execute([$filmId, $code, $label, $color, 'picture', $sort++]);
             $created[] = $code;
             $have[] = $code;
         }
         $tagged = 0;
         if ($created) {
-            $st = $pdo->prepare("SELECT id, text FROM notes WHERE film_id = ? AND (tag IS NULL OR tag = '')");
-            $st->execute([$filmId]);
-            $upd = $pdo->prepare('UPDATE notes SET tag = ?, text = ? WHERE id = ?');
+            $st = $pdo->prepare("SELECT id, text FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag IS NULL OR tag = '')");
+            $st->execute([$filmId, Ctx::wsId()]);
+            $upd = $pdo->prepare('UPDATE notes SET tag = ?, text = ? WHERE id = ? AND workspace_id = ?');
             foreach ($st->fetchAll() as $n) {
                 [$tag, $text] = split_tag((string)$n['text'], $created);
                 if ($tag !== '') {
-                    $upd->execute([$tag, $text, $n['id']]);
+                    $upd->execute([$tag, $text, $n['id'], Ctx::wsId()]);
                     $tagged++;
                 }
             }
@@ -1097,10 +1275,10 @@ switch ("$method $action") {
         $dropped = [];
         if (!empty($in['drop_defaults'])) {
             foreach (DEFAULT_CATEGORIES as [$k]) {
-                $n = $pdo->prepare("SELECT COUNT(*) FROM notes WHERE film_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ? OR tag LIKE ?)");
-                $n->execute([$filmId, $k, $k . '-%', '%-' . $k, '%-' . $k . '-%']);
+                $n = $pdo->prepare("SELECT COUNT(*) FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ? OR tag LIKE ?)");
+                $n->execute([$filmId, Ctx::wsId(), $k, $k . '-%', '%-' . $k, '%-' . $k . '-%']);
                 if ((int)$n->fetchColumn() === 0 && count($have) > 1) {
-                    $pdo->prepare('DELETE FROM categories WHERE film_id = ? AND key = ?')->execute([$filmId, $k]);
+                    $pdo->prepare('DELETE FROM categories WHERE film_id = ? AND "key" = ?')->execute([$filmId, $k]);
                     $dropped[] = $k;
                 }
             }
@@ -1109,7 +1287,7 @@ switch ("$method $action") {
         json_out(['ok' => true, 'created' => $created, 'tagged' => $tagged, 'dropped' => $dropped, 'categories' => film_categories($filmId)]);
 
     case 'POST category.delete':
-        $filmId = int_in($in, 'film_id');
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $id = int_in($in, 'id');
         $cats = film_categories($filmId);
         $cat = array_values(array_filter($cats, fn($c) => $c['id'] === $id))[0] ?? fail('That track no longer exists.', 404);
@@ -1118,9 +1296,9 @@ switch ("$method $action") {
             fail('Choose a different track to move the notes to.');
         }
         $pdo->beginTransaction();
-        $notes = $pdo->prepare("SELECT id, tag FROM notes WHERE film_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ?)");
-        $notes->execute([$filmId, $cat['key'], $cat['key'] . '-%', '%-' . $cat['key']]);
-        $upd = $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ?');
+        $notes = $pdo->prepare("SELECT id, tag FROM notes WHERE film_id = ? AND workspace_id = ? AND (tag = ? OR tag LIKE ? OR tag LIKE ?)");
+        $notes->execute([$filmId, Ctx::wsId(), $cat['key'], $cat['key'] . '-%', '%-' . $cat['key']]);
+        $upd = $pdo->prepare('UPDATE notes SET tag = ? WHERE id = ? AND workspace_id = ?');
         $moved = 0;
         foreach ($notes as $n) {
             $parts = explode('-', $n['tag']);
@@ -1129,7 +1307,7 @@ switch ("$method $action") {
             if ($first) {
                 array_unshift($parts, $moveTo);
             }
-            $upd->execute([implode('-', array_values(array_unique(array_filter($parts, fn($p) => $p !== '')))), $n['id']]);
+            $upd->execute([implode('-', array_values(array_unique(array_filter($parts, fn($p) => $p !== '')))), $n['id'], Ctx::wsId()]);
             $moved++;
         }
         $pdo->prepare('DELETE FROM categories WHERE id = ? AND film_id = ?')->execute([$id, $filmId]);
@@ -1137,7 +1315,7 @@ switch ("$method $action") {
         json_out(['ok' => true, 'moved' => $moved, 'categories' => film_categories($filmId)]);
 
     case 'POST category.order':
-        $filmId = int_in($in, 'film_id');
+        $filmId = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $ids = array_map('intval', (array)($in['ids'] ?? []));
         $upd = $pdo->prepare('UPDATE categories SET sort = ? WHERE id = ? AND film_id = ?');
         foreach ($ids as $i => $cid) {
@@ -1150,7 +1328,9 @@ switch ("$method $action") {
     case 'GET settings':
         $c = conn_reload();
         $tok = fio_tokens();
+        $staff = is_platform($me, 'platform_admin') && !Ctx::impersonating();
         json_out([
+            'company' => ['id' => Ctx::orgId(), 'name' => Ctx::$org['name']],
             'frameio' => [
                 'mode' => fio_mode(), 'redirect_uri' => fio_redirect_uri(),
                 'redirect_pattern' => str_replace('.', '\\.', fio_redirect_uri()),
@@ -1166,7 +1346,8 @@ switch ("$method $action") {
                 'key' => mask_secret($c['el_key'] ?? null), 'model' => $c['el_model'] ?? 'scribe_v2',
                 'language' => $c['el_language'] ?? '', 'diarize' => $c['el_diarize'] ?? true,
             ],
-            'mail' => [
+            'mail' => !$staff ? ['configured' => mail_configured(), 'from' => mail_configured() ? ($c['smtp_from'] ?? '') : '', 'staff' => false] : [
+                'staff' => true,
                 'host' => $c['smtp_host'] ?? '', 'port' => (int)($c['smtp_port'] ?? 465), 'security' => $c['smtp_security'] ?? 'ssl',
                 'user' => $c['smtp_user'] ?? '', 'pass' => !empty($c['smtp_pass']), 'from' => $c['smtp_from'] ?? '',
                 'from_name' => $c['smtp_from_name'] ?? '', 'configured' => mail_configured(), 'checked_at' => $c['smtp_checked_at'] ?? null,
@@ -1245,7 +1426,7 @@ switch ("$method $action") {
             $changes['fio_client_secret'] = $secret;
         }
         if (($c['fio_client_id'] ?? '') !== $id || $secret !== '' || ($c['fio_mode'] ?? 'user') !== $mode) {
-            @unlink(FIO_TOKEN_FILE);
+            fio_save_tokens(null);
         }
         conn_save($changes);
         if ($mode === 'user' && (empty(fio_tokens()['refresh_token']) || !empty(fio_tokens()['expired']))) {
@@ -1271,8 +1452,8 @@ switch ("$method $action") {
         json_out(['ok' => true, 'accounts' => $accounts, 'account_id' => $pick['id'] ?? null]);
 
     case 'POST settings.frameio.clear':
-        conn_save(['fio_client_id' => null, 'fio_client_secret' => null, 'fio_account_id' => null, 'fio_account_name' => null, 'fio_accounts' => null, 'fio_checked_at' => null]);
-        @unlink(FIO_TOKEN_FILE);
+        conn_save(['fio_client_id' => null, 'fio_client_secret' => null, 'fio_account_id' => null, 'fio_account_name' => null, 'fio_accounts' => null, 'fio_checked_at' => null, 'fio_mode' => null]);
+        fio_save_tokens(null);
         json_out(['ok' => true]);
 
     case 'POST settings.elevenlabs':
@@ -1298,9 +1479,9 @@ switch ("$method $action") {
         json_out(['ok' => true]);
 
     case 'POST film.update':
-        $fid = int_in($in, 'film_id');
+        $fid = (int)scoped_film(int_in($in, 'film_id'))['id'];
         $terms = array_values(array_unique(array_filter(array_map(fn($t) => mb_substr(trim($t), 0, 49), preg_split('/[\r\n,]+/', (string)($in['keyterms'] ?? ''))))));
-        $pdo->prepare('UPDATE films SET keyterms = ? WHERE id = ?')->execute([implode("\n", array_slice($terms, 0, 1000)), $fid]);
+        $pdo->prepare('UPDATE films SET keyterms = ? WHERE id = ? AND workspace_id = ?')->execute([implode("\n", array_slice($terms, 0, 1000)), $fid, Ctx::wsId()]);
         json_out(['ok' => true, 'count' => count($terms)]);
 
     /* ---------------- Frame.io ---------------- */
@@ -1314,8 +1495,8 @@ switch ("$method $action") {
             json_out(['stack' => null]);
         }
         $stack = fio_stack($v['fio_stack_id'], $v['fio_account_id'] ?: null);
-        $linked = $pdo->prepare('SELECT fio_file_id, label FROM versions WHERE film_id = ? AND fio_file_id IS NOT NULL');
-        $linked->execute([(int)$v['film_id']]);
+        $linked = $pdo->prepare('SELECT fio_file_id, label FROM versions WHERE film_id = ? AND workspace_id = ? AND fio_file_id IS NOT NULL');
+        $linked->execute([(int)$v['film_id'], Ctx::wsId()]);
         $map = array_column($linked->fetchAll(), 'label', 'fio_file_id');
         foreach ($stack['files'] as &$f) {
             $f['linked_to'] = $map[$f['id']] ?? null;
@@ -1332,13 +1513,13 @@ switch ("$method $action") {
         }
         $stackId = preg_match('/^[0-9a-f-]{36}$/i', (string)($in['stack_id'] ?? '')) ? strtolower($in['stack_id']) : null;
         $accId = preg_match('/^[A-Za-z0-9:@._-]{6,80}$/', (string)($in['account_id'] ?? '')) ? (string)$in['account_id'] : null;
-        $pdo->prepare('UPDATE versions SET fio_file_id = ?, fio_stack_id = ?, fio_name = ?, fio_account_id = ? WHERE id = ?')
-            ->execute([$fileId, $stackId, mb_substr((string)($in['name'] ?? ''), 0, 300), $accId, $vid]);
+        $pdo->prepare('UPDATE versions SET fio_file_id = ?, fio_stack_id = ?, fio_name = ?, fio_account_id = ? WHERE id = ? AND workspace_id = ?')
+            ->execute([$fileId, $stackId, mb_substr((string)($in['name'] ?? ''), 0, 300), $accId, $vid, Ctx::wsId()]);
         json_out(['ok' => true]);
 
     case 'POST version.unlink':
-        $vid = int_in($in, 'version_id');
-        $pdo->prepare('UPDATE versions SET fio_file_id = NULL, fio_stack_id = NULL, fio_name = NULL, fio_synced_at = NULL, fio_account_id = NULL WHERE id = ?')->execute([$vid]);
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
+        $pdo->prepare('UPDATE versions SET fio_file_id = NULL, fio_stack_id = NULL, fio_name = NULL, fio_synced_at = NULL, fio_account_id = NULL WHERE id = ? AND workspace_id = ?')->execute([$vid, Ctx::wsId()]);
         json_out(['ok' => true]);
 
     case 'POST version.sync':
@@ -1350,7 +1531,7 @@ switch ("$method $action") {
         @set_time_limit(120);
         $got = fio_comments($v['fio_file_id'], (int)$v['tc_base'], $v['fio_account_id'] ?: null);
         $stats = import_comments($vid, $got['comments'], $got['tc_base'], '', 'Frame.io sync');
-        $pdo->prepare('UPDATE versions SET fio_synced_at = ? WHERE id = ?')->execute([now_iso(), $vid]);
+        $pdo->prepare('UPDATE versions SET fio_synced_at = ? WHERE id = ? AND workspace_id = ?')->execute([now_iso(), $vid, Ctx::wsId()]);
         json_out($stats + ['total' => count($got['comments']), 'sample_timestamp' => $got['sample']]);
 
     case 'GET version.media':
@@ -1382,7 +1563,7 @@ switch ("$method $action") {
         json_out(['job_id' => (int)$pdo->lastInsertId()]);
 
     case 'POST transcribe.run':
-        $jid = int_in($in, 'job_id');
+        $jid = int_in($in, 'job_id'); // the gate checked the job's version is in this production
         $claim = $pdo->prepare("UPDATE jobs SET status = 'running', message = ?, updated_at = ? WHERE id = ? AND status = 'queued'");
         $claim->execute(['Getting the video link…', now_iso(), $jid]);
         if ($claim->rowCount() !== 1) {
@@ -1393,7 +1574,7 @@ switch ("$method $action") {
         exit;
 
     case 'GET transcribe.status':
-        $vid = int_in($in, 'version_id');
+        $vid = (int)version_row(int_in($in, 'version_id'))['id'];
         $st = $pdo->prepare("SELECT * FROM jobs WHERE version_id = ? AND kind = 'transcribe' ORDER BY id DESC LIMIT 1");
         $st->execute([$vid]);
         $job = $st->fetch();
@@ -1407,7 +1588,7 @@ switch ("$method $action") {
             'result' => $job['result'] ? json_decode($job['result'], true) : null, 'created_at' => $job['created_at'], 'created_by' => $job['created_by']] : null]);
 
     case 'POST transcript.speaker':
-        $tid = int_in($in, 'transcript_id');
+        $tid = int_in($in, 'transcript_id'); // the gate checked the transcript is in this production
         $from = str_in($in, 'from', 60);
         $to = str_in($in, 'to', 60);
         $u = $pdo->prepare('UPDATE segments SET speaker = ? WHERE transcript_id = ? AND speaker = ?');
@@ -1415,18 +1596,17 @@ switch ("$method $action") {
         json_out(['ok' => true, 'changed' => $u->rowCount()]);
 
     case 'GET export':
-        $filmId = int_in($in, 'film_id');
-        $film = $pdo->prepare('SELECT name FROM films WHERE id = ?');
-        $film->execute([$filmId]);
-        $filmName = $film->fetchColumn() ?: fail('That film no longer exists.', 404);
-        $vs = $pdo->prepare('SELECT id, label, tc_base, tc_start FROM versions WHERE film_id = ? ORDER BY id');
-        $vs->execute([$filmId]);
+        $film = scoped_film(int_in($in, 'film_id'));
+        $filmId = (int)$film['id'];
+        $filmName = $film['name'];
+        $vs = $pdo->prepare('SELECT id, label, tc_base, tc_start FROM versions WHERE film_id = ? AND workspace_id = ? ORDER BY id');
+        $vs->execute([$filmId, Ctx::wsId()]);
         $versions = $vs->fetchAll();
         $ns = $pdo->prepare(
             'SELECT n.*, ov.label AS origin_label FROM notes n LEFT JOIN versions ov ON ov.id = n.origin_version_id
-             WHERE n.film_id = ? ORDER BY n.id'
+             WHERE n.film_id = ? AND n.workspace_id = ? ORDER BY n.id'
         );
-        $ns->execute([$filmId]);
+        $ns->execute([$filmId, Ctx::wsId()]);
         $pos = [];
         $ps = $pdo->prepare('SELECT p.* FROM positions p JOIN versions v ON v.id = p.version_id WHERE v.film_id = ?');
         $ps->execute([$filmId]);
@@ -1458,6 +1638,171 @@ switch ("$method $action") {
         }
         fclose($out);
         exit;
+
+    /* ---------------- Company: productions and the audit trail ---------------- */
+
+    case 'GET company':
+        $st = $pdo->prepare(
+            "SELECT w.id, w.name, w.status, w.created_at,
+                    (SELECT COUNT(*) FROM films f WHERE f.workspace_id = w.id) AS films,
+                    (SELECT COUNT(*) FROM workspace_access a JOIN memberships m ON m.user_id = a.user_id AND m.org_id = w.org_id AND m.status = 'active'
+                      WHERE a.workspace_id = w.id) AS people
+             FROM workspaces w WHERE w.org_id = ? ORDER BY w.status, w.name, w.id"
+        );
+        $st->execute([Ctx::orgId()]);
+        $log = $pdo->prepare(
+            'SELECT a.action, a.detail, a.at, ru.name AS actor, au.name AS as_name
+             FROM audit_log a LEFT JOIN users ru ON ru.id = a.actor_id LEFT JOIN users au ON au.id = a.as_user_id
+             WHERE a.org_id = ? ORDER BY a.id DESC LIMIT 200'
+        );
+        $log->execute([Ctx::orgId()]);
+        $m = $pdo->prepare("SELECT COUNT(*) FROM memberships WHERE org_id = ? AND status = 'active'");
+        $m->execute([Ctx::orgId()]);
+        json_out(['company' => ['id' => Ctx::orgId(), 'name' => Ctx::$org['name'], 'status' => Ctx::$org['status'], 'members' => (int)$m->fetchColumn()],
+            'workspaces' => $st->fetchAll(), 'audit' => $log->fetchAll(), 'company_role' => org_power($me, Ctx::$org, $real)]);
+
+    case 'POST workspace.create':
+        $id = create_workspace(Ctx::orgId(), (string)($in['name'] ?? ''));
+        // The person who made it can open it straight away, even if they're a production admin only by company role.
+        json_out(['ok' => true, 'id' => $id]);
+
+    case 'POST workspace.update':
+        $ws = Ctx::$ws ?? fail(NO_ACCESS, 404);
+        $name = isset($in['name']) ? trim((string)$in['name']) : $ws['name'];
+        if ($name === '' || mb_strlen($name) > 120) {
+            fail('Enter the production’s name (up to 120 characters).');
+        }
+        $status = in_array($in['status'] ?? '', ['active', 'archived'], true) ? $in['status'] : $ws['status'];
+        if ($status === 'archived' && $ws['status'] !== 'archived') {
+            $n = $pdo->prepare("SELECT COUNT(*) FROM workspaces WHERE org_id = ? AND status = 'active'");
+            $n->execute([Ctx::orgId()]);
+            if ((int)$n->fetchColumn() <= 1) {
+                fail('Keep at least one production open. Make a new one first.');
+            }
+        }
+        $pdo->prepare('UPDATE workspaces SET name = ?, status = ? WHERE id = ? AND org_id = ?')->execute([$name, $status, $ws['id'], Ctx::orgId()]);
+        json_out(['ok' => true]);
+
+    /* ---------------- Platform: Previously Noted staff ---------------- */
+
+    case 'GET platform':
+        $orgs = $pdo->query(
+            "SELECT o.id, o.name, o.slug, o.status, o.created_at,
+                    (SELECT COUNT(*) FROM memberships m WHERE m.org_id = o.id AND m.status = 'active') AS members,
+                    (SELECT COUNT(*) FROM workspaces w WHERE w.org_id = o.id) AS workspaces,
+                    (SELECT MIN(w.id) FROM workspaces w WHERE w.org_id = o.id AND w.status = 'active') AS first_ws,
+                    (SELECT GROUP_CONCAT(u.name ORDER BY u.name SEPARATOR ', ') FROM memberships m JOIN users u ON u.id = m.user_id
+                      WHERE m.org_id = o.id AND m.org_role = 'owner' AND m.status = 'active') AS owners
+             FROM organizations o ORDER BY o.name"
+        )->fetchAll();
+        $q = trim((string)($in['q'] ?? ''));
+        $st = $pdo->prepare(
+            "SELECT u.*, (SELECT GROUP_CONCAT(o.name ORDER BY o.name SEPARATOR ', ') FROM memberships m JOIN organizations o ON o.id = m.org_id
+                          WHERE m.user_id = u.id AND m.status <> 'removed') AS companies
+             FROM users u WHERE (? = '' OR u.email LIKE ? OR u.name LIKE ?) OR u.platform_role IS NOT NULL
+             ORDER BY u.platform_role IS NULL, u.name LIMIT 100"
+        );
+        $like = '%' . addcslashes($q, '%_\\') . '%';
+        $st->execute([$q, $like, $like]);
+        $people = array_map(fn($u) => user_public($u) + ['companies' => $u['companies']], $st->fetchAll());
+        json_out(['orgs' => $orgs, 'people' => $people, 'me' => (int)$real['id'], 'role' => $real['platform_role'],
+            'mail' => mail_configured() ? mail_settings()['from'] : null]);
+
+    case 'POST platform.org.create':
+        // A new company with its first production; its owner is invited (or added, if they're you).
+        $email = norm_email((string)($in['owner_email'] ?? ''));
+        $pdo->beginTransaction();
+        $orgId = create_org((string)($in['name'] ?? ''));
+        $wsId = create_workspace($orgId, trim((string)($in['workspace'] ?? '')) ?: 'First production');
+        Ctx::set(org_row($orgId), ws_row($wsId), 'admin');
+        $link = null;
+        if ($email === '' || $email === $real['email']) {
+            add_member($orgId, (int)$real['id'], 'owner', (int)$real['id']);
+        } else {
+            [$uid, $token] = invite_member($orgId, (string)($in['owner_name'] ?? ''), $email, 'owner', null, null, (int)$real['id']);
+            $link = app_base_url() . '?invite=' . $token;
+        }
+        audit('company created', $orgId, (string)($in['name'] ?? ''));
+        $pdo->commit();
+        $sent = false;
+        $mailError = null;
+        if ($link) {
+            $u = user_by_email($email);
+            [$sent, $mailError] = send_account_link(['email' => $u['email'], 'name' => $u['name'], 'org_name' => Ctx::$org['name'], 'has_password' => !empty($u['pass_hash']),
+                'role_label' => ORG_ROLE_LABELS['owner']], 'invite', $link, INVITE_DAYS . ' days', $real, !empty($in['send']));
+        }
+        json_out(['ok' => true, 'org_id' => $orgId, 'workspace_id' => $wsId, 'link' => $link, 'sent' => $sent, 'mail_error' => $mailError]);
+
+    case 'POST platform.org.update':
+        $org = org_row(int_in($in, 'org_id')) ?? fail('That company no longer exists.', 404);
+        $status = in_array($in['status'] ?? '', ['active', 'suspended'], true) ? $in['status'] : $org['status'];
+        $name = isset($in['name']) ? trim((string)$in['name']) : $org['name'];
+        if ($name === '' || mb_strlen($name) > 120) {
+            fail('Enter the company’s name (up to 120 characters).');
+        }
+        $pdo->prepare('UPDATE organizations SET name = ?, status = ? WHERE id = ?')->execute([$name, $status, $org['id']]);
+        if ($status !== $org['status']) {
+            audit($status === 'suspended' ? 'company suspended' : 'company reactivated', (int)$org['id']);
+        }
+        json_out(['ok' => true]);
+
+    case 'POST platform.user.update':
+        $u = user_by_id(int_in($in, 'id')) ?? fail('That person no longer exists.', 404);
+        $pr = array_key_exists('platform_role', $in) ? ($in['platform_role'] ?: null) : $u['platform_role'];
+        if ($pr !== null && !in_array($pr, PLATFORM_ROLES, true)) {
+            fail('Unknown platform role.');
+        }
+        $status = in_array($in['status'] ?? '', ['active', 'disabled'], true) ? $in['status'] : $u['status'];
+        if ((int)$u['id'] === (int)$real['id'] && ($pr !== 'platform_admin' || $status !== 'active')) {
+            fail('You can’t take away your own platform admin role or turn yourself off.');
+        }
+        $pdo->prepare('UPDATE users SET platform_role = ?, status = ?, epoch = epoch + ?, locked_until = CASE WHEN ? THEN 0 ELSE locked_until END,
+                failed = CASE WHEN ? THEN 0 ELSE failed END WHERE id = ?')
+            ->execute([$pr, $status, $status !== $u['status'] ? 1 : 0, !empty($in['unlock']) ? 1 : 0, !empty($in['unlock']) ? 1 : 0, $u['id']]);
+        foreach (user_org_ids((int)$u['id']) ?: [null] as $oid) {
+            audit('person changed', $oid, $u['email'] . ': platform role ' . ($pr ?? 'none') . ', ' . $status . (!empty($in['unlock']) ? ', unlocked' : ''));
+        }
+        json_out(['ok' => true, 'person' => user_public(user_by_id((int)$u['id']))]);
+
+    case 'POST platform.reset_link':
+        $u = user_by_id(int_in($in, 'id')) ?? fail('That person no longer exists.', 404);
+        if ($u['status'] === 'disabled') {
+            fail('Turn this account back on first.');
+        }
+        $token = issue_token((int)$u['id']);
+        $link = app_base_url() . '?reset=' . $token;
+        foreach (user_org_ids((int)$u['id']) ?: [null] as $oid) {
+            audit('password reset link', $oid, $u['email']);
+        }
+        [$sent, $mailError] = send_account_link($u, 'reset', $link, RESET_HOURS . ' hours', $real, !empty($in['send']));
+        json_out(['ok' => true, 'kind' => 'reset', 'link' => $link, 'expires' => RESET_HOURS . ' hours', 'sent' => $sent, 'mail_error' => $mailError]);
+
+    case 'POST platform.impersonate':
+        // See the app as someone else, to reproduce a problem. Support stays read-only; every company they're in sees it.
+        $u = user_by_id(int_in($in, 'id')) ?? fail('That person no longer exists.', 404);
+        if ((int)$u['id'] === (int)$real['id']) {
+            fail('That’s you.');
+        }
+        if (is_platform($u, 'platform_admin') && !is_platform($real, 'platform_admin')) {
+            fail('Support can’t impersonate a platform admin.', 403);
+        }
+        $_SESSION['as'] = (int)$u['id'];
+        session_write_close();
+        Ctx::$user = $u;
+        foreach (user_org_ids((int)$u['id']) ?: [null] as $oid) {
+            audit('impersonation started', $oid, $u['email']);
+        }
+        json_out(['ok' => true]);
+
+    case 'POST platform.impersonate.stop':
+        if (Ctx::impersonating()) {
+            foreach (user_org_ids((int)$me['id']) ?: [null] as $oid) {
+                audit('impersonation ended', $oid, $me['email']);
+            }
+        }
+        unset($_SESSION['as']);
+        session_write_close();
+        json_out(['ok' => true]);
 
     default:
         fail('Unknown request.', 404);
@@ -1495,7 +1840,7 @@ function run_transcription(int $jobId): void
     try {
         $job = $pdo->query('SELECT * FROM jobs WHERE id = ' . $jobId)->fetch();
         $v = version_row((int)$job['version_id']);
-        $film = $pdo->query('SELECT keyterms FROM films WHERE id = ' . (int)$v['film_id'])->fetch();
+        $film = scoped_film((int)$v['film_id']);
         $terms = array_values(array_filter(explode("\n", (string)($film['keyterms'] ?? ''))));
         $source = $v['fio_file_id'] ? fio_media($v['fio_file_id'], 'efficient', $v['fio_account_id'] ?: null)['url'] : $v['video_url'];
         $set('running', 'ElevenLabs is transcribing the cut…');

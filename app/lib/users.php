@@ -4,12 +4,15 @@ declare(strict_types=1);
 /*
  * People and roles.
  *
- *   admin     everything, including people, Settings and connections, deleting versions
+ * People are platform-wide: one email and password, and a place in one or more companies (lib/tenancy.php).
+ * Roles in a production:
+ *
+ *   admin     everything an editor can, plus deleting versions and giving people access to the production
  *   editor    notes, versions, imports, edits, transcripts, tracks, script approval
  *   reviewer  add notes, reply, suggest script lines as drafts
  *   viewer    read only
  *
- * Invites and password resets are one-time links an admin copies and sends.
+ * Invites are one-time links on the membership; password resets are one-time links on the person.
  * Only a hash of each link's token is stored.
  */
 
@@ -19,29 +22,6 @@ const INVITE_DAYS = 7;
 const RESET_HOURS = 48;
 const LOCK_AFTER = 5;
 const LOCK_MINUTES = 10;
-
-function users_migrate(PDO $pdo): void
-{
-    $pdo->exec(<<<SQL
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    email TEXT NOT NULL,
-    name TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'reviewer',
-    status TEXT NOT NULL DEFAULT 'invited',
-    pass_hash TEXT,
-    token_hash TEXT,
-    token_kind TEXT,
-    token_expires INTEGER,
-    failed INTEGER NOT NULL DEFAULT 0,
-    locked_until INTEGER NOT NULL DEFAULT 0,
-    epoch INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    last_login TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email);
-SQL);
-}
 
 function norm_email(string $e): string
 {
@@ -83,33 +63,33 @@ function user_by_email(string $email): ?array
     return $st->fetch() ?: null;
 }
 
-function create_user(string $name, string $email, string $role, ?string $password): int
+/** A new person. Without a password they can't sign in until they accept an invite. */
+function create_user(string $name, string $email, ?string $password, ?string $platformRole = null): int
 {
-    if (!isset(ROLES[$role])) {
-        throw new RuntimeException('Unknown role.');
-    }
-    if (!valid_email($email)) {
+    if (!valid_email(norm_email($email))) {
         throw new RuntimeException('That email address doesn’t look right.');
     }
     if (user_by_email($email)) {
-        throw new RuntimeException('Someone with that email address is already on the list.');
+        throw new RuntimeException('Someone with that email address already has an account.');
     }
     $name = trim($name);
     if ($name === '' || mb_strlen($name) > 60) {
         throw new RuntimeException('Enter a name (up to 60 characters).');
     }
-    db()->prepare('INSERT INTO users (email, name, role, status, pass_hash, created_at) VALUES (?,?,?,?,?,?)')
-        ->execute([norm_email($email), $name, $role, $password ? 'active' : 'invited', $password ? password_hash($password, PASSWORD_DEFAULT) : null, now_iso()]);
+    if ($platformRole !== null && !in_array($platformRole, PLATFORM_ROLES, true)) {
+        throw new RuntimeException('Unknown platform role.');
+    }
+    db()->prepare("INSERT INTO users (email, name, platform_role, status, pass_hash, created_at) VALUES (?,?,?,'active',?,?)")
+        ->execute([norm_email($email), $name, $platformRole, $password ? password_hash($password, PASSWORD_DEFAULT) : null, now_iso()]);
     return (int)db()->lastInsertId();
 }
 
-/** A one-time link for an invite or a password reset. Returns the raw token (shown once). */
-function issue_token(int $userId, string $kind): string
+/** A one-time password reset link. Returns the raw token (shown once). */
+function issue_token(int $userId, string $kind = 'reset'): string
 {
     $token = bin2hex(random_bytes(24));
-    $ttl = $kind === 'invite' ? INVITE_DAYS * 86400 : RESET_HOURS * 3600;
     db()->prepare('UPDATE users SET token_hash = ?, token_kind = ?, token_expires = ? WHERE id = ?')
-        ->execute([hash('sha256', $token), $kind, time() + $ttl, $userId]);
+        ->execute([hash('sha256', $token), 'reset', time() + RESET_HOURS * 3600, $userId]);
     return $token;
 }
 
@@ -126,7 +106,7 @@ function user_by_token(string $token): ?array
 /** Set a password and sign out every other session of this person. */
 function set_password(int $userId, string $password): void
 {
-    db()->prepare("UPDATE users SET pass_hash = ?, status = CASE WHEN status = 'invited' THEN 'active' ELSE status END,
+    db()->prepare("UPDATE users SET pass_hash = ?,
         token_hash = NULL, token_kind = NULL, token_expires = NULL, failed = 0, locked_until = 0, epoch = epoch + 1 WHERE id = ?")
         ->execute([password_hash($password, PASSWORD_DEFAULT), $userId]);
 }
@@ -140,11 +120,11 @@ function attempt_login(string $email, string $password): array|string
         return 'That email and password don’t match an account.';
     }
     if ($u['status'] === 'disabled') {
-        return 'This account has been turned off. Ask an admin.';
+        return 'This account has been turned off. Ask Previously Noted support.';
     }
     if ((int)$u['locked_until'] > time()) {
         $min = (int)ceil(((int)$u['locked_until'] - time()) / 60);
-        return "Too many wrong passwords. Try again in $min minute" . ($min === 1 ? '' : 's') . ', or ask an admin for a reset link.';
+        return "Too many wrong passwords. Try again in $min minute" . ($min === 1 ? '' : 's') . ', or use Forgot your password.';
     }
     if (!password_verify($password, $u['pass_hash'])) {
         $failed = (int)$u['failed'] + 1;
@@ -164,11 +144,13 @@ function sign_in_session(array $u): void
     session_regenerate_id(true);
     $_SESSION['uid'] = (int)$u['id'];
     $_SESSION['epoch'] = (int)$u['epoch'];
-    unset($_SESSION['user']);
+    unset($_SESSION['user'], $_SESSION['as']);
 }
 
-/** The signed-in person, checked against the database on every request. */
-function current_account(): ?array
+/**
+ * The person actually signed in, checked against the database on every request.
+ */
+function real_account(): ?array
 {
     static $cache = false;
     if ($cache !== false) {
@@ -179,21 +161,33 @@ function current_account(): ?array
         return null;
     }
     $u = user_by_id((int)$_SESSION['uid']);
-    if (!$u || $u['status'] !== 'active' || (int)$u['epoch'] !== (int)($_SESSION['epoch'] ?? 0)) {
-        unset($_SESSION['uid'], $_SESSION['epoch']);
+    if (!$u || $u['status'] !== 'active' || !$u['pass_hash'] || (int)$u['epoch'] !== (int)($_SESSION['epoch'] ?? 0)) {
+        unset($_SESSION['uid'], $_SESSION['epoch'], $_SESSION['as']);
         return null;
     }
     return $cache = $u;
 }
 
-function role_at_least(?array $u, string $role): bool
+/** The person this request acts as: the one signed in, or the one staff are impersonating. */
+function current_account(): ?array
 {
-    return $u && (ROLES[$u['role']] ?? 0) >= ROLES[$role];
+    $real = real_account();
+    if (!$real) {
+        return null;
+    }
+    if (!empty($_SESSION['as']) && is_platform($real)) {
+        $as = user_by_id((int)$_SESSION['as']);
+        if ($as) {
+            return $as;
+        }
+    }
+    return $real;
 }
 
-function active_admins(): int
+/** Does a production role reach the one needed? */
+function role_at_least(?string $have, string $need): bool
 {
-    return (int)db()->query("SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active'")->fetchColumn();
+    return $have !== null && (ROLES[$have] ?? 0) >= ROLES[$need];
 }
 
 function app_base_url(): string
@@ -205,9 +199,9 @@ function app_base_url(): string
 function user_public(array $u): array
 {
     return [
-        'id' => (int)$u['id'], 'name' => $u['name'], 'email' => $u['email'], 'role' => $u['role'], 'status' => $u['status'],
+        'id' => (int)$u['id'], 'name' => $u['name'], 'email' => $u['email'], 'status' => $u['status'],
+        'platform_role' => $u['platform_role'] ?? null, 'has_password' => !empty($u['pass_hash']),
         'last_login' => $u['last_login'], 'created_at' => $u['created_at'],
-        'link_pending' => $u['token_hash'] && (int)$u['token_expires'] > time() ? $u['token_kind'] : null,
         'locked' => (int)$u['locked_until'] > time(),
     ];
 }

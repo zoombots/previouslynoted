@@ -218,24 +218,41 @@ function mail_html(string $heading, string $intro, string $button, string $link,
 }
 
 /** Email an invite or a password-reset link. $by is the admin sending it. */
-function mail_account_link(array $person, string $kind, string $link, string $expires, array $by): void
+/**
+ * Email an invite or a password reset link.
+ * $person: email, name, and for invites org_name, role_label and has_password. $by: who sent it (null when the
+ * person asked for a reset themselves on the sign-in page).
+ */
+function mail_account_link(array $person, string $kind, string $link, string $expires, ?array $by): void
 {
     $app = app_config()['app_name'] ?? 'Previously Noted';
-    $role = ROLE_LABELS[$person['role']] ?? $person['role'];
     if ($kind === 'invite') {
-        $subject = "{$by['name']} invited you to $app";
-        $heading = "Join $app";
-        $intro = h($by['name']) . ' invited you to ' . h($app) . ' as <b>' . h($role) . '</b>, to follow the review notes on the film. Choose a password to get started.';
-        $button = 'Choose your password';
-        $after = 'This link works once and expires in ' . h($expires) . '. You’ll sign in with ' . h($person['email']) . '.';
-        $text = "Hi {$person['name']},\n\n{$by['name']} invited you to $app as $role, to follow the review notes on the film.\n\nChoose your password here (the link works once and expires in $expires):\n$link\n\nYou’ll sign in with {$person['email']}.\n\nIf you weren’t expecting this, you can ignore it.\n";
+        $org = (string)($person['org_name'] ?? $app);
+        $role = (string)($person['role_label'] ?? '');
+        $as = $role !== '' ? ' as <b>' . h($role) . '</b>' : '';
+        $asText = $role !== '' ? " as $role" : '';
+        $subject = "{$by['name']} invited you to $org on $app";
+        $heading = "Join $org";
+        if (!empty($person['has_password'])) {
+            $intro = h($by['name']) . ' invited you to <b>' . h($org) . '</b> on ' . h($app) . $as . '. You already have an account, so just sign in to join.';
+            $button = "Join $org";
+            $after = 'This link works once and expires in ' . h($expires) . '. Sign in with ' . h($person['email']) . '.';
+            $text = "Hi {$person['name']},\n\n{$by['name']} invited you to $org on $app$asText. You already have an account, so just sign in to join:\n$link\n\nThe link works once and expires in $expires. Sign in with {$person['email']}.\n\nIf you weren’t expecting this, you can ignore it.\n";
+        } else {
+            $intro = h($by['name']) . ' invited you to <b>' . h($org) . '</b> on ' . h($app) . $as . ', to follow the review notes on the film. Choose a password to get started.';
+            $button = 'Choose your password';
+            $after = 'This link works once and expires in ' . h($expires) . '. You’ll sign in with ' . h($person['email']) . '.';
+            $text = "Hi {$person['name']},\n\n{$by['name']} invited you to $org on $app$asText, to follow the review notes on the film.\n\nChoose your password here (the link works once and expires in $expires):\n$link\n\nYou’ll sign in with {$person['email']}.\n\nIf you weren’t expecting this, you can ignore it.\n";
+        }
     } else {
+        $who = $by ? h($by['name']) . ' sent you' : 'Someone (hopefully you) asked for';
+        $whoText = $by ? "{$by['name']} sent you" : 'Someone (hopefully you) asked for';
         $subject = "Reset your $app password";
         $heading = 'Choose a new password';
-        $intro = h($by['name']) . ' sent you a link to choose a new password for ' . h($app) . '. Your current password keeps working until you use it.';
+        $intro = $who . ' a link to choose a new password for ' . h($app) . '. Your current password keeps working until you use it.';
         $button = 'Choose a new password';
         $after = 'This link works once and expires in ' . h($expires) . '. Using it signs you out of ' . h($app) . ' on your other devices.';
-        $text = "Hi {$person['name']},\n\n{$by['name']} sent you a link to choose a new password for $app. Your current password keeps working until you use it.\n\nChoose a new password here (the link works once and expires in $expires):\n$link\n\nIf you weren’t expecting this, you can ignore it.\n";
+        $text = "Hi {$person['name']},\n\n$whoText a link to choose a new password for $app. Your current password keeps working until you use it.\n\nChoose a new password here (the link works once and expires in $expires):\n$link\n\nIf you weren’t expecting this, you can ignore it.\n";
     }
-    mail_send([$person['email'], $person['name']], $subject, $text, mail_html($heading, $intro, $button, $link, $after), [$by['email'], $by['name']]);
+    mail_send([$person['email'], $person['name']], $subject, $text, mail_html($heading, $intro, $button, $link, $after), $by ? [$by['email'], $by['name']] : null);
 }
