@@ -8,6 +8,12 @@
   const RANK = { viewer: 1, reviewer: 2, editor: 3, admin: 4 };
   let ROLE = document.body.dataset.role || 'viewer';
   const can = (r) => (RANK[ROLE] || 0) >= RANK[r];
+  // The production this page is on (every request says which), and what this person is in its company.
+  const WS = +document.body.dataset.ws || 0;
+  const COMPANY_ROLE = document.body.dataset.companyRole || '';
+  const PLATFORM = document.body.dataset.platform || '';
+  const companyAdmin = () => COMPANY_ROLE === 'owner' || COMPANY_ROLE === 'admin';
+  const wsq = (q) => `api.php?ws=${WS}&${q}`;
 
   const STATUS = {
     open:       { label: 'Open',          verb: 'Reopen',          done: false },
@@ -112,7 +118,7 @@
   }
 
   async function api(action, { body, form, query } = {}) {
-    const qs = new URLSearchParams({ action, ...(query || {}) });
+    const qs = new URLSearchParams({ action, ...(WS ? { ws: WS } : {}), ...(query || {}) });
     const opt = { headers: { 'X-CSRF-Token': CSRF }, credentials: 'same-origin' };
     if (form) { opt.method = 'POST'; opt.body = form; }
     else if (body) { opt.method = 'POST'; opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
@@ -169,6 +175,7 @@
   /* ---------- state loading ---------- */
   async function loadState(prefer = {}) {
     const d = await api('state');
+    S.ws = d.workspace;
     S.films = d.films; S.versions = d.versions; S.user = d.user; S.conn = d.connections || S.conn;
     const hash = new URLSearchParams(location.hash.slice(1));
     const num = (x) => (x ? +x : null);
@@ -444,13 +451,14 @@
     const busy = (b, on) => { b.disabled = on; };
     showDialog(
       el('h2', { text: 'Settings' }),
+      el('p', { class: 'small', text: `Connections for ${d.company.name}. Every production in the company uses them.` }),
       el('h3', { text: 'Frame.io' }),
       el('form', { onsubmit: async (ev) => {
         ev.preventDefault();
         const b = submitBtn; busy(b, true); fioStatus.classList.remove('err'); fioStatus.textContent = 'Checking…';
         try {
           const r = await api('settings.frameio', { body: { mode, client_id: cid.value, client_secret: sec.value, account_id: acct.value || null } });
-          if (r.needs_signin) { fioStatus.textContent = 'Taking you to Adobe to sign in…'; location.href = 'oauth.php?start=1'; return; }
+          if (r.needs_signin) { fioStatus.textContent = 'Taking you to Adobe to sign in…'; location.href = `oauth.php?start=1&ws=${WS}`; return; }
           await loadState({ filmId: S.filmId, versionId: S.versionId });
           toast(r.account_id ? 'Frame.io connected.' : 'Connected. Choose which Frame.io account to use.');
           openSettings();
@@ -466,7 +474,7 @@
           if (!confirm('Disconnect Frame.io? Links on versions are kept for when you reconnect.')) return;
           try { await api('settings.frameio.clear', { body: {} }); await loadState({ filmId: S.filmId, versionId: S.versionId }); openSettings(); } catch (err) { fail(err); }
         } }) : null,
-        mode === 'user' && (f.signed_in || f.expired) ? el('button', { type: 'button', class: f.expired ? 'btn' : 'btn ghost', text: 'Sign in again', onclick: () => { location.href = 'oauth.php?start=1'; } }) : null,
+        mode === 'user' && (f.signed_in || f.expired) ? el('button', { type: 'button', class: f.expired ? 'btn' : 'btn ghost', text: 'Sign in again', onclick: () => { location.href = `oauth.php?start=1&ws=${WS}`; } }) : null,
         submitBtn)),
       el('h3', { text: 'ElevenLabs transcription' }),
       el('p', { text: 'Transcribes a linked cut straight from Frame.io (Scribe, about $0.22 per hour of audio). Create an API key with Speech to Text access in ElevenLabs → Developers → API keys.' }),
@@ -487,7 +495,8 @@
           try { await api('settings.elevenlabs.clear', { body: {} }); await loadState({ filmId: S.filmId, versionId: S.versionId }); openSettings(); } catch (err) { fail(err); }
         } }) : null,
         el('button', { class: 'btn primary', text: 'Save' }))),
-      mailSection(d.mail),
+      d.mail.staff ? mailSection(d.mail) : el('section', { class: 'mail-settings' }, el('h3', { text: 'Email' }),
+        el('p', { text: d.mail.configured ? `Invites and password resets are emailed from ${d.mail.from}.` : 'This server doesn’t send email yet, so invites are copied and sent by hand. Previously Noted support sets up email for everyone.' })),
       el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn ghost', text: 'Close', onclick: closeDialog })));
   }
 
@@ -2086,7 +2095,7 @@
     parts.push(el('details', { class: 'add-film', open: !S.films.length },
       el('summary', { text: S.films.length ? 'Add another film' : 'Add your first film' }), newFilm),
     el('div', { class: 'dlg-actions' },
-      film ? el('a', { class: 'btn ghost left', href: `api.php?action=export&film_id=${S.filmId}`, text: 'Download all notes (CSV)' }) : null,
+      film ? el('a', { class: 'btn ghost left', href: wsq(`action=export&film_id=${S.filmId}`), text: 'Download all notes (CSV)' }) : null,
       el('button', { type: 'button', class: 'btn', text: 'Close', onclick: closeDialog })));
     showDialog(...parts);
   }
@@ -2291,7 +2300,7 @@
         const s = src.get(ver.id);
         if (ver.fingerprint && !redo.checked) {
           say(`Loading the fingerprint of ${ver.label}…`);
-          const r = await fetch(`api.php?action=fingerprint&version_id=${ver.id}`, { credentials: 'same-origin' });
+          const r = await fetch(wsq(`action=fingerprint&version_id=${ver.id}`), { credentials: 'same-origin' });
           if (r.ok) {
             const fp = P.unpack(await r.arrayBuffer());
             if (!fp.stale) { prints[ver.id] = fp; continue; }
@@ -2385,7 +2394,7 @@
       const q = new URLSearchParams({ action: 'export.markers', version_id: v.id, format: f, scope: scope.value, placed: placed.checked ? '1' : '' });
       if (keys.length < trackBoxes.length) q.set('tracks', keys.join(','));
       if (v.id === S.versionId && video.src && isFinite(video.duration)) q.set('dur', Math.round(video.duration * (+v.tc_base || 24)));
-      go.href = `api.php?${q}`;
+      go.href = wsq(String(q));
     };
     showDialog(
       el('h2', { text: `Markers for ${v.label}` }),
@@ -2460,7 +2469,7 @@
 
   /* ---------- your account ---------- */
   const ROLE_HELP = {
-    admin: 'Everything, plus People, Settings and connections, and deleting versions.',
+    admin: 'Everything an editor can, plus deleting versions and choosing who in the company can open this production.',
     editor: 'Notes, statuses, versions, imports, edits, transcripts, tracks and approving script lines.',
     reviewer: 'Adds notes and replies, and suggests script wording as drafts. Can’t change statuses or approve.',
     viewer: 'Watches and reads. Can’t change anything.',
@@ -2481,7 +2490,9 @@
     const pw2 = el('input', { type: 'password', autocomplete: 'new-password', minlength: 10, required: true });
     showDialog(
       el('h2', { text: 'Your account' }),
-      el('p', {}, 'You’re signed in as ', el('strong', { text: ROLE_NAMES[me.role] }), '. ' + ROLE_HELP[me.role]),
+      ROLE ? el('p', {}, 'In this production you’re ', el('strong', { text: ROLE_NAMES[ROLE] }), '. ' + ROLE_HELP[ROLE]) : null,
+      companyAdmin() ? el('p', { text: `You’re ${COMPANY_ROLE === 'owner' ? 'an owner' : 'an admin'} of the company too, so you’re an admin in all its productions and can invite people.` }) : null,
+      el('p', { class: 'small', text: 'Your name, email and password are the same in every company you’re part of.' }),
       el('form', { onsubmit: async (e) => {
         e.preventDefault();
         try {
@@ -2513,89 +2524,221 @@
         el('button', { class: 'btn primary', text: 'Change password' }))));
   }
 
-  /* ---------- people (admins) ---------- */
+  /* ---------- people: the company's members, and who can open this production ---------- */
   function linkBox(r, intro) {
-    const p = r.person;
+    const p = r.person || {};
     const sentNote = r.sent
       ? el('p', { class: 'sent ok', text: `Emailed to ${p.email}${S.conn.mail ? ' from ' + S.conn.mail : ''}. You can also copy the link below.` })
       : r.mail_error ? el('p', { class: 'sent err', text: `Couldn’t email it: ${r.mail_error} Copy the link and send it yourself.` }) : null;
     const app = document.querySelector('.brand')?.textContent || 'Previously Noted';
-    const subject = r.kind === 'reset' ? `Reset your ${app} password` : `You’re invited to ${app}`;
+    const company = r.company || S.ws?.org?.name || app;
+    const subject = r.kind === 'reset' ? `Reset your ${app} password` : `You’re invited to ${company} on ${app}`;
     const body = r.kind === 'reset'
-      ? `Hi ${p.name},\n\nHere’s a link to choose a new password for ${app}. It works once and expires in ${r.expires}:\n\n${r.link}\n`
-      : `Hi ${p.name},\n\nYou’re invited to ${app} as ${ROLE_NAMES[p.role]}. Open this link to choose your password. It works once and expires in ${r.expires}:\n\n${r.link}\n`;
-    const mail = `mailto:${encodeURIComponent(p.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      ? `Hi ${p.name || ''},\n\nHere’s a link to choose a new password for ${app}. It works once and expires in ${r.expires}:\n\n${r.link}\n`
+      : `Hi ${p.name || ''},\n\nYou’re invited to ${company} on ${app}. Open this link to ${p.has_password ? 'sign in and join' : 'choose your password'}. It works once and expires in ${r.expires}:\n\n${r.link}\n`;
+    const mail = `mailto:${encodeURIComponent(p.email || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     return el('div', { class: 'linkbox', role: 'status' },
       sentNote,
       el('p', { text: intro }),
       el('div', { class: 'copyrow' }, el('code', { text: r.link }),
         el('button', { type: 'button', class: 'btn', text: 'Copy link', onclick: () => { navigator.clipboard?.writeText(r.link); toast('Link copied'); } }),
         r.sent ? null : el('a', { class: 'btn ghost', href: mail, text: 'Email it' })),
-      el('p', { class: 'small', text: 'This link is shown only now. Anyone with it can set the password, so send it straight to them. You can make a new one at any time; the old one stops working.' }));
+      el('p', { class: 'small', text: r.kind === 'reset'
+        ? 'This link is shown only now. Anyone with it can set the password, so send it straight to them.'
+        : 'This link is shown only now, and works only for that email address. You can make a new one at any time; the old one stops working.' }));
   }
 
+  const COMPANY_NAMES = { owner: 'Owner', admin: 'Company admin', member: 'Member' };
   async function openPeople(notice) {
     let d;
     try { d = await api('people'); } catch (e) { fail(e); return; }
-    const roleSel = (value, onchange) => el('select', { 'aria-label': 'Role', onchange },
+    const ws = d.workspace, company = ws.org.name;
+    const accessSel = (value, onchange, label = 'Role in this production') => el('select', { 'aria-label': label, onchange },
+      el('option', { value: '', text: 'No access', selected: !value }),
       ...['viewer', 'reviewer', 'editor', 'admin'].map((r) => el('option', { value: r, text: ROLE_NAMES[r], selected: r === value })));
-    const iname = el('input', { maxlength: 60, required: true, autocomplete: 'off' });
-    const iemail = el('input', { type: 'email', required: true, autocomplete: 'off' });
-    const irole = roleSel('reviewer');
-    const isend = el('input', { type: 'checkbox', checked: !!d.mail });
+    const companySel = (value, onchange) => el('select', { 'aria-label': 'Role in the company', onchange },
+      ...['member', 'admin', 'owner'].filter((r) => r !== 'owner' || d.company_role === 'owner' || value === 'owner')
+        .map((r) => el('option', { value: r, text: COMPANY_NAMES[r], selected: r === value })));
     const upd = async (p, body, msg) => {
       try { await api('people.update', { body: { id: p.id, ...body } }); toast(msg); openPeople(); } catch (err) { fail(err); openPeople(); }
     };
     const link = async (p) => {
       try {
         const r = await api('people.link', { body: { id: p.id, send: !!d.mail } });
-        openPeople(linkBox(r, r.kind === 'reset' ? `Password reset link for ${p.name}:` : `New invite link for ${p.name}:`));
+        openPeople(linkBox(r, `New invite link for ${p.name}:`));
       } catch (err) { fail(err); }
     };
     const row = (p) => {
       const self = p.id === d.me;
-      const state = p.status === 'disabled' ? ['off', 'Turned off'] : p.status === 'invited' ? ['invited', p.link_pending ? 'Invited' : 'Invite expired'] : p.locked ? ['locked', 'Locked out'] : null;
+      const state = p.status === 'invited' ? ['invited', p.invite_pending ? 'Invited' : 'Invite expired'] : null;
       const B = (text, fn, cls = 'btn ghost') => el('button', { type: 'button', class: cls, text, onclick: fn });
-      return el('li', { class: 'prow' + (p.status === 'disabled' ? ' off' : '') },
+      const access = p.org_wide
+        ? el('span', { class: 'pstate', text: 'Admin everywhere', title: `${COMPANY_NAMES[p.org_role]}s are admins in every production of ${company}.` })
+        : accessSel(p.ws_role, (e) => upd(p, { role: e.target.value },
+          e.target.value ? `${p.name} is now ${ROLE_NAMES[e.target.value]} in ${ws.name}.` : `${p.name} can’t open ${ws.name} any more.`));
+      return el('li', { class: 'prow' },
         el('div', { class: 'prow-who' },
           el('strong', { text: p.name + (self ? ' (you)' : '') }),
           el('small', { text: p.email + (p.last_login ? ` · last signed in ${fmtDate(p.last_login)}` : p.status === 'active' ? ' · hasn’t signed in yet' : '') })),
         state ? el('span', { class: 'pstate ' + state[0], text: state[1] }) : null,
-        roleSel(p.role, (e) => upd(p, { role: e.target.value }, `${p.name} is now ${ROLE_NAMES[e.target.value]}.`)),
+        access,
+        d.can_company ? companySel(p.org_role, (e) => upd(p, { org_role: e.target.value }, `${p.name} is now ${COMPANY_NAMES[e.target.value]} of ${company}.`)) : null,
         el('div', { class: 'prow-acts' },
-          p.locked ? B('Unlock', () => upd(p, { unlock: 1 }, `${p.name} can try again now.`)) : null,
-          p.status !== 'disabled' ? B(p.status === 'invited' ? (d.mail ? 'Email a new invite' : 'New invite link') : (d.mail ? 'Email a reset link' : 'Reset link'), () => link(p)) : null,
-          self ? null : p.status === 'disabled'
-            ? B('Turn on', () => upd(p, { status: 'active' }, `${p.name} can sign in again.`))
-            : B('Turn off', () => { if (confirm(`Turn off ${p.name}’s account? They’re signed out straight away and can’t sign in until you turn it back on. Their notes stay.`)) upd(p, { status: 'disabled' }, `${p.name} is turned off.`); }, 'btn ghost danger'),
-          self || p.status === 'active' ? null : B('Remove', async () => {
-            if (!confirm(`Remove ${p.name} from the list? Their notes and history stay, under their name.`)) return;
+          d.can_company && p.status === 'invited' ? B(d.mail ? 'Email a new invite' : 'New invite link', () => link(p)) : null,
+          d.can_company && !self ? B(p.status === 'invited' ? 'Withdraw' : 'Remove…', async () => {
+            if (!confirm(p.status === 'invited' ? `Withdraw ${p.name}’s invite?` : `Remove ${p.name} from ${company}? They lose access to all its productions straight away. Their notes and history stay, under their name.`)) return;
             try { await api('people.delete', { body: { id: p.id } }); toast(`${p.name} removed.`); openPeople(); } catch (err) { fail(err); }
-          }, 'btn ghost danger')));
+          }, 'btn ghost danger') : null));
     };
+    let invite = null;
+    if (d.can_company) {
+      const iname = el('input', { maxlength: 60, required: true, autocomplete: 'off' });
+      const iemail = el('input', { type: 'email', required: true, autocomplete: 'off' });
+      const irole = accessSel('reviewer', null);
+      const icompany = companySel('member', () => { irole.disabled = icompany.value !== 'member'; });
+      const isend = el('input', { type: 'checkbox', checked: !!d.mail });
+      invite = [
+        el('h3', { text: 'Invite someone' }),
+        el('form', { class: 'invite', onsubmit: async (e) => {
+          e.preventDefault();
+          try {
+            const r = await api('people.invite', { body: { name: iname.value, email: iemail.value, role: icompany.value === 'member' ? irole.value : '', org_role: icompany.value, send: !!d.mail && isend.checked } });
+            openPeople(linkBox({ ...r, kind: 'invite', expires: `${r.days} days`, company },
+              r.existing ? `${r.person.name} already has an account, so the link just asks them to sign in and join:` : `Invite link for ${r.person.name}:`));
+          } catch (err) { fail(err); }
+        } },
+        el('div', { class: 'invite-grid' },
+          el('label', {}, 'Name', iname), el('label', {}, 'Email', iemail),
+          el('label', {}, `Role in ${ws.name}`, irole), el('label', {}, 'In the company', icompany)),
+        d.mail ? el('label', { class: 'inline' }, isend, ` Email the invite from ${d.mail}`) : null,
+        el('div', { class: 'dlg-actions' },
+          el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
+          el('button', { class: 'btn primary', text: d.mail ? 'Invite' : 'Create invite link' }))),
+      ];
+    }
     showDialog(
       el('h2', { text: 'People' }),
+      el('p', { class: 'small', text: `Everyone in ${company}, and what they can do in ${ws.name}. People without access can’t see this production at all.` }),
       notice || null,
       el('ul', { class: 'plist' }, ...d.people.map(row)),
-      el('h3', { text: 'Invite someone' }),
-      el('form', { class: 'invite', onsubmit: async (e) => {
-        e.preventDefault();
-        try {
-          const r = await api('people.invite', { body: { name: iname.value, email: iemail.value, role: irole.value, send: !!d.mail && isend.checked } });
-          openPeople(linkBox({ ...r, kind: 'invite', expires: `${r.days} days` }, `Invite link for ${r.person.name}:`));
-        } catch (err) { fail(err); }
-      } },
-      el('div', { class: 'invite-grid' },
-        el('label', {}, 'Name', iname), el('label', {}, 'Email', iemail), el('label', {}, 'Role', irole)),
-      d.mail ? el('label', { class: 'inline' }, isend, ` Email the invite from ${d.mail}`) : null,
-      el('div', { class: 'dlg-actions' },
-        el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
-        el('button', { class: 'btn primary', text: d.mail ? 'Invite' : 'Create invite link' }))),
+      ...(invite || [el('p', { text: `To invite someone new to ${company}, ask a company admin. You can give access to anyone already on this list.` }),
+        el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn ghost', text: 'Close', onclick: closeDialog }))]),
       el('details', { class: 'roles-help' }, el('summary', { text: 'What each role can do' }),
-        el('dl', {}, ...['admin', 'editor', 'reviewer', 'viewer'].flatMap((r) => [el('dt', { text: ROLE_NAMES[r] }), el('dd', { text: ROLE_HELP[r] })]))),
-      el('p', { class: 'small', text: d.mail
-        ? `Invites and reset links are emailed from ${d.mail}, with you as the reply-to. Each link is also shown here to copy.`
-        : 'Email isn’t set up, so copy each link, or use Email it to open a message in your own mail app. To send them from your own address (like hello@yourdomain), set up Email in Settings.' }));
+        el('dl', {}, ...['admin', 'editor', 'reviewer', 'viewer'].flatMap((r) => [el('dt', { text: ROLE_NAMES[r] }), el('dd', { text: ROLE_HELP[r] })]),
+          el('dt', { text: 'Company admin' }), el('dd', { text: 'An admin in every production of the company. Invites and removes people, makes and archives productions, and connects Frame.io and ElevenLabs.' }),
+          el('dt', { text: 'Owner' }), el('dd', { text: 'Everything a company admin can, and can make other owners.' }))),
+      el('p', { class: 'small', text: (d.mail
+        ? `Invites are emailed from ${d.mail}, with you as the reply-to. Each link is also shown here to copy.`
+        : 'Email isn’t set up on this server, so copy each link, or use Email it to open a message in your own mail app.')
+        + ' Someone who forgets their password gets a new one with “Forgot your password?” on the sign-in page.' }));
+  }
+
+  /* ---------- company: its productions and the audit trail ---------- */
+  async function openCompany() {
+    let d;
+    try { d = await api('company'); } catch (e) { fail(e); return; }
+    const admin = d.company_role === 'owner' || d.company_role === 'admin';
+    const nameIn = el('input', { maxlength: 120, required: true, placeholder: 'The film or series' });
+    const B = (text, fn, cls = 'btn ghost') => el('button', { type: 'button', class: cls, text, onclick: fn });
+    const save = async (w, body, msg) => {
+      try { await api('workspace.update', { body: { workspace_id: w.id, ...body } }); toast(msg); openCompany(); } catch (err) { fail(err); }
+    };
+    const row = (w) => el('li', { class: 'prow' + (w.status === 'archived' ? ' off' : '') },
+      el('div', { class: 'prow-who' },
+        el('strong', { text: w.name + (w.id === WS ? ' (open now)' : '') }),
+        el('small', { text: `${w.films} film${w.films === 1 ? '' : 's'} · ${w.people} ${w.people === 1 ? 'person' : 'people'} with access, plus company admins` })),
+      w.status === 'archived' ? el('span', { class: 'pstate off', text: 'Archived' }) : null,
+      el('div', { class: 'prow-acts' },
+        w.id !== WS ? B('Open', () => { location.href = `./?ws=${w.id}`; }) : null,
+        admin ? B('Rename…', () => { const n = prompt('New name for the production:', w.name); if (n && n.trim() !== w.name) save(w, { name: n.trim() }, 'Renamed.'); }) : null,
+        admin ? (w.status === 'archived'
+          ? B('Reopen', () => save(w, { status: 'active' }, `${w.name} is open again.`))
+          : B('Archive…', () => { if (confirm(`Archive ${w.name}? It stays readable, but nobody can change it until it’s reopened.`)) save(w, { status: 'archived' }, `${w.name} is archived.`); }, 'btn ghost danger')) : null));
+    showDialog(
+      el('h2', { text: d.company.name }),
+      el('p', { class: 'small', text: `${d.company.members} ${d.company.members === 1 ? 'member' : 'members'}. Each production has its own films and its own list of who can open it (see People).` }),
+      el('h3', { text: 'Productions' }),
+      el('ul', { class: 'plist' }, ...d.workspaces.map(row)),
+      admin ? el('form', { class: 'invite', onsubmit: async (e) => {
+        e.preventDefault();
+        try { const r = await api('workspace.create', { body: { name: nameIn.value } }); location.href = `./?ws=${r.id}`; } catch (err) { fail(err); }
+      } },
+      el('div', { class: 'two' }, el('label', {}, 'New production', nameIn)),
+      el('div', { class: 'dlg-actions' }, el('button', { class: 'btn primary', text: 'Make the production' }))) : null,
+      el('details', { class: 'roles-help' }, el('summary', { text: `Previously Noted support activity (${d.audit.length})` }),
+        d.audit.length ? el('ul', { class: 'audit' }, ...d.audit.map((a) => el('li', {},
+          el('small', { text: fmtDate(a.at) }), ' ',
+          `${a.actor || 'Someone'}${a.as_name ? ` (as ${a.as_name})` : ''}: ${a.action}${a.detail ? ' · ' + a.detail : ''}`)))
+          : el('p', { text: 'Nothing yet. When Previously Noted support looks at your productions or acts for someone, it’s listed here.' })),
+      el('div', { class: 'dlg-actions' }, B('Close', closeDialog)));
+  }
+
+  /* ---------- platform: Previously Noted staff ---------- */
+  async function openPlatform(q = '', notice = null) {
+    let d;
+    try { d = await api('platform', { query: { q } }); } catch (e) { fail(e); return; }
+    const pa = d.role === 'platform_admin';
+    const B = (text, fn, cls = 'btn ghost') => el('button', { type: 'button', class: cls, text, onclick: fn });
+    const orgRow = (o) => el('li', { class: 'prow' + (o.status === 'suspended' ? ' off' : '') },
+      el('div', { class: 'prow-who' }, el('strong', { text: o.name }),
+        el('small', { text: `${o.members} members · ${o.workspaces} productions${o.owners ? ' · owner ' + o.owners : ''}` })),
+      o.status === 'suspended' ? el('span', { class: 'pstate off', text: 'Suspended' }) : null,
+      el('div', { class: 'prow-acts' },
+        o.first_ws ? B('Open', () => { location.href = `./?ws=${o.first_ws}`; }) : null,
+        pa ? B(o.status === 'suspended' ? 'Reactivate' : 'Suspend…', async () => {
+          if (o.status !== 'suspended' && !confirm(`Suspend ${o.name}? Nobody in it can open its productions until it’s reactivated.`)) return;
+          try { await api('platform.org.update', { body: { org_id: o.id, status: o.status === 'suspended' ? 'active' : 'suspended' } }); openPlatform(q); } catch (err) { fail(err); }
+        }, o.status === 'suspended' ? 'btn ghost' : 'btn ghost danger') : null));
+    const personRow = (p) => el('li', { class: 'prow' + (p.status === 'disabled' ? ' off' : '') },
+      el('div', { class: 'prow-who' }, el('strong', { text: p.name + (p.id === d.me ? ' (you)' : '') }),
+        el('small', { text: `${p.email}${p.companies ? ' · ' + p.companies : ' · no company'}${p.has_password ? '' : ' · hasn’t chosen a password'}` })),
+      p.locked ? el('span', { class: 'pstate locked', text: 'Locked out' }) : p.status === 'disabled' ? el('span', { class: 'pstate off', text: 'Turned off' }) : null,
+      pa ? el('select', { 'aria-label': 'Staff role', disabled: p.id === d.me, onchange: async (e) => {
+        try { await api('platform.user.update', { body: { id: p.id, platform_role: e.target.value } }); toast('Saved.'); } catch (err) { fail(err); openPlatform(q); }
+      } }, ...[['', 'Customer'], ['support', 'Support'], ['platform_admin', 'Platform admin']].map(([v, t]) => el('option', { value: v, text: t, selected: (p.platform_role || '') === v })))
+        : (p.platform_role ? el('span', { class: 'pstate', text: p.platform_role === 'support' ? 'Support' : 'Platform admin' }) : null),
+      el('div', { class: 'prow-acts' },
+        p.id !== d.me && p.has_password ? B('See as them', async () => {
+          if (!confirm(`See the app as ${p.name}?${pa ? '' : ' (read-only)'} Their companies see this in their activity list.`)) return;
+          try { await api('platform.impersonate', { body: { id: p.id } }); location.href = './'; } catch (err) { fail(err); }
+        }) : null,
+        pa && p.locked ? B('Unlock', async () => { try { await api('platform.user.update', { body: { id: p.id, unlock: 1 } }); openPlatform(q); } catch (err) { fail(err); } }) : null,
+        pa && p.status !== 'disabled' && p.has_password ? B(d.mail ? 'Email a reset link' : 'Reset link', async () => {
+          try { const r = await api('platform.reset_link', { body: { id: p.id, send: !!d.mail } }); openPlatform(q, linkBox({ ...r, person: p }, `Password reset link for ${p.name}:`)); } catch (err) { fail(err); }
+        }) : null,
+        pa && p.id !== d.me ? B(p.status === 'disabled' ? 'Turn on' : 'Turn off…', async () => {
+          if (p.status !== 'disabled' && !confirm(`Turn off ${p.name}’s account? They’re signed out everywhere and can’t sign in to any company.`)) return;
+          try { await api('platform.user.update', { body: { id: p.id, status: p.status === 'disabled' ? 'active' : 'disabled' } }); openPlatform(q); } catch (err) { fail(err); }
+        }, p.status === 'disabled' ? 'btn ghost' : 'btn ghost danger') : null));
+    const search = el('input', { type: 'search', value: q, placeholder: 'Search people by name or email', 'aria-label': 'Search people' });
+    let newCo = null;
+    if (pa) {
+      const cname = el('input', { maxlength: 120, required: true }), wname = el('input', { maxlength: 120, placeholder: 'First production' });
+      const oname = el('input', { maxlength: 60 }), oemail = el('input', { type: 'email', placeholder: 'Leave empty to own it yourself' });
+      newCo = [el('h3', { text: 'New company' }),
+        el('form', { class: 'invite', onsubmit: async (e) => {
+          e.preventDefault();
+          try {
+            const r = await api('platform.org.create', { body: { name: cname.value, workspace: wname.value, owner_name: oname.value, owner_email: oemail.value, send: !!d.mail } });
+            if (r.link) openPlatform(q, linkBox({ ...r, kind: 'invite', expires: '7 days', company: cname.value, person: { name: oname.value, email: oemail.value } }, `Invite link for the owner of ${cname.value}:`));
+            else { toast(`${cname.value} is ready.`); openPlatform(q); }
+          } catch (err) { fail(err); }
+        } },
+        el('div', { class: 'invite-grid' }, el('label', {}, 'Company name', cname), el('label', {}, 'First production', wname),
+          el('label', {}, 'Owner’s name', oname), el('label', {}, 'Owner’s email', oemail)),
+        el('div', { class: 'dlg-actions' }, el('button', { class: 'btn primary', text: 'Make the company' })))];
+    }
+    showDialog(
+      el('h2', { text: 'All companies' }),
+      el('p', { class: 'small', text: pa ? 'You’re a platform admin: you can open and change any company’s productions. Changes you make while seeing the app as someone are in their companies’ activity list.'
+        : 'You’re support: you can open any company’s productions read-only, and see the app as someone (read-only) to reproduce a problem.' }),
+      notice,
+      el('ul', { class: 'plist' }, ...d.orgs.map(orgRow)),
+      ...(newCo || []),
+      el('h3', { text: 'People' }),
+      el('form', { class: 'filter-row', onsubmit: (e) => { e.preventDefault(); openPlatform(search.value.trim()); } }, search, el('button', { class: 'btn', text: 'Search' })),
+      el('ul', { class: 'plist' }, ...d.people.map(personRow)),
+      el('div', { class: 'dlg-actions' }, B('Close', closeDialog)));
   }
 
   /* ---------- resizable panes, kept per view ---------- */
@@ -2761,7 +2904,7 @@
         L('People (in this menu): invite someone, choose their role, email a reset link, unlock, turn off or remove.',
           'Roles: Viewer watches; Reviewer adds notes, replies and draft script lines; Editor does everything with notes, versions and tracks; Admin also manages people, settings and deleting versions.',
           'Settings and connections: Frame.io, ElevenLabs and email for invites.')) : null,
-      el('p', { class: 'small', text: `You’re signed in as ${ROLE_NAMES[ROLE]}. The README that came with the app has the full guide.` }),
+      el('p', { class: 'small', text: `In this production you’re ${ROLE_NAMES[ROLE] || 'a viewer'}.${companyAdmin() ? ' As a company admin you also invite people and make productions (your name menu → People, Company and productions).' : ''} The README that came with the app has the full guide.` }),
       el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn primary', text: 'Close', onclick: closeDialog })));
   }
 
@@ -2784,6 +2927,12 @@
   });
   $('settingsBtn')?.addEventListener('click', openSettings);
   $('peopleBtn')?.addEventListener('click', () => openPeople());
+  $('companyBtn')?.addEventListener('click', openCompany);
+  $('platformBtn')?.addEventListener('click', () => openPlatform());
+  $('wsSelect')?.addEventListener('change', (e) => { location.href = `./?ws=${e.target.value}`; });
+  $('impStop')?.addEventListener('click', async () => {
+    try { await api('platform.impersonate.stop', { body: {} }); location.href = './'; } catch (err) { fail(err); }
+  });
   $('accountBtn').addEventListener('click', openAccount);
   $('helpBtn').addEventListener('click', openHelp);
   // Pop-up menus (account, Manage, playback, More): close after a choice, on Escape, and when clicking elsewhere.
@@ -2833,8 +2982,8 @@
     renderScript();
     setTimeout(() => renderTimeline(), 50);
   });
-  $('dlTxt').addEventListener('click', (e) => { e.preventDefault(); location.href = `api.php?action=script.export&format=txt&version_id=${S.versionId}`; });
-  $('dlCsv').addEventListener('click', (e) => { e.preventDefault(); location.href = `api.php?action=script.export&format=csv&version_id=${S.versionId}`; });
+  $('dlTxt').addEventListener('click', (e) => { e.preventDefault(); location.href = wsq(`action=script.export&format=txt&version_id=${S.versionId}`); });
+  $('dlCsv').addEventListener('click', (e) => { e.preventDefault(); location.href = wsq(`action=script.export&format=csv&version_id=${S.versionId}`); });
   $('scriptChanges').addEventListener('change', renderScript);
   $('script').addEventListener('wheel', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
   $('script').addEventListener('touchmove', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
@@ -2892,14 +3041,29 @@
     }
   });
 
+  if (!WS) {
+    // Not in any production yet (or every one is closed to them).
+    document.body.classList.add('no-ws');
+    if (PLATFORM) openPlatform();
+    else showDialog(el('h2', { text: 'No productions yet' }),
+      el('p', { text: 'You’re signed in, but you don’t have access to a production yet. Ask the admin of your company to give you access in People.' }),
+      el('div', { class: 'dlg-actions' }, el('a', { class: 'btn', href: '?signout=1', text: 'Sign out' })));
+    return;
+  }
+  if ('archived' in document.body.dataset) {
+    const b = $('tcFix').cloneNode(false);
+    b.id = 'archivedBar'; b.hidden = false; b.className = 'banner archived';
+    b.textContent = 'This production is archived, so it’s read-only. A company admin can reopen it in Company and productions.';
+    document.querySelector('.stage').prepend(b);
+  }
   loadState().then(() => {
     setView(view);
     const q = new URLSearchParams(location.search);
     const fio = q.get('fio');
     if (!fio) return;
-    history.replaceState(null, '', location.pathname + location.hash.replace('#settings', ''));
+    history.replaceState(null, '', location.pathname + `?ws=${WS}` + location.hash.replace('#settings', ''));
     if (fio === 'connected') toast('Signed in with Adobe. Frame.io is connected.');
     if (fio === 'error') toast(q.get('msg') || 'The Adobe sign-in didn’t finish.');
-    if (fio !== 'connected' && can('admin')) openSettings();
+    if (fio !== 'connected' && companyAdmin()) openSettings();
   }).catch(fail);
 })();

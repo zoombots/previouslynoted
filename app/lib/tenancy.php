@@ -11,6 +11,8 @@ declare(strict_types=1);
 const ORG_ROLES = ['member' => 1, 'admin' => 2, 'owner' => 3];
 const ORG_ROLE_LABELS = ['owner' => 'Owner', 'admin' => 'Company admin', 'member' => 'Member'];
 const PLATFORM_ROLES = ['support', 'platform_admin'];
+// The same answer for an id that doesn't exist and one in a production you can't open, so ids can't be probed.
+const NO_ACCESS = 'That no longer exists, or you don’t have access to it.';
 
 final class Ctx
 {
@@ -237,7 +239,7 @@ function resolve_request_workspace(array $in): ?int
         $q[$kind]->execute([$id]);
         $w = $q[$kind]->fetchColumn();
         if ($w === false) {
-            fail("That $kind no longer exists.", 404);
+            fail(NO_ACCESS, 404);
         }
         $found[(int)$w] = true;
     }

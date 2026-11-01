@@ -131,8 +131,6 @@ const ACTIONS = [
     'POST platform.user.update' => ['platform', 'platform_admin'], 'POST platform.reset_link' => ['platform', 'platform_admin'],
 ];
 
-const NO_ACCESS = 'That no longer exists, or you don’t have access to it.';
-
 /* ---------------- the gate ---------------- */
 [$class, $need] = ACTIONS["$method $action"] ?? fail('Unknown request.', 404);
 $wsParam = isset($in['ws']) && is_numeric($in['ws']) ? (int)$in['ws'] : null;

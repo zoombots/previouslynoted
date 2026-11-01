@@ -40,8 +40,8 @@ class Browser:
             raise RuntimeError('login failed: ' + re.sub(r'\s+', ' ', re.sub('<[^>]+>', ' ', r.text))[:300])
         return r
 
-    def api(self, action, body=None, ws=True, files=None, **query):
-        q = {'action': action, **query}
+    def api(self, action, body=None, ws=True, files=None, query=None, **kw):
+        q = {'action': action, **(query or {}), **kw}
         if ws and self.ws and 'ws' not in q:
             q['ws'] = self.ws
         h = {'X-CSRF-Token': self.csrf or ''}
