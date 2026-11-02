@@ -92,7 +92,24 @@ f.api('people.update', {'id': SC['rex_id'], 'role': 'admin'})
 code, d = rex.api('people')
 check(code == 200 and not d['can_company'], f'production admin sees people: {code}')
 check(rex.api('people.update', {'id': SC['mia_id'], 'role': 'viewer'})[0] == 200, 'production admin gives access')
-check(rex.api('people.invite', {'name': 'Q', 'email': 'q@example.com'})[0] == 403, 'production admin can’t invite')
+check(rex.api('people.invite', {'name': 'Q', 'email': 'q@example.com', 'role': 'editor'})[0] == 200, 'production admin invites to the production')
+check(rex.api('people.invite', {'name': 'Q2', 'email': 'q2@example.com', 'role': 'reviewer', 'org_role': 'admin'})[0] == 403, 'production admin can’t make company admins')
+check(rex.api('people.invite', {'name': 'Q3', 'email': 'adam@example.com', 'role': 'viewer'})[0] == 400, 'production admin can’t re-invite a member')
+q_id = int(sql("select id from users where email='q@example.com'")[0][0])
+check(rex.api('people.link', {'id': q_id})[0] == 200, 'production admin resends the invite')
+check(rex.api('people.delete', {'id': q_id})[0] == 200, 'production admin withdraws the invite')
+check(rex.api('people.delete', {'id': SC['mia_id']})[0] == 403, 'production admin can’t remove a member')
+# An editor (Rex in Secret film) invites viewers and reviewers only, as members.
+rex.ws = SC['ws3']
+code, d = rex.api('people.invite', {'name': 'Rev', 'email': 'rev@example.com', 'role': 'reviewer'})
+check(code == 200 and d['person']['ws_role'] == 'reviewer' and d['person']['org_role'] == 'member', f'editor invites a reviewer: {code} {d}')
+rev = Browser(); r = rev.page(d['link'].split('/', 3)[3], name='Rev', password=PW, password2=PW)
+check(rev.ws == SC['ws3'], 'invited reviewer lands in the production')
+check(rex.api('people.invite', {'name': 'E', 'email': 'e2@example.com', 'role': 'editor'})[0] == 403, 'editor can’t invite an editor')
+check(rex.api('people.invite', {'name': 'E', 'email': 'e3@example.com', 'role': 'viewer', 'org_role': 'admin'})[0] == 403, 'editor can’t invite a company admin')
+check(rex.api('people')[0] == 403, 'editor doesn’t see the company list')
+check(rex.api('people.link', {'id': q_id})[0] == 403, 'editor can’t resend invites')
+rex.ws = SC['ws2']
 check(rex.api('people.update', {'id': SC['mia_id'], 'org_role': 'admin'})[0] == 403, 'production admin can’t change company roles')
 # 6. Support: reads any company, can't write, impersonation is read-only and audited.
 sue = login('sue@example.com'); sue.ws = SC['ws3']

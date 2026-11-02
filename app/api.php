@@ -117,7 +117,8 @@ const ACTIONS = [
     'POST version.delete' => ['ws', 'admin'],
     // People: production admins give access to people already in the company; inviting and company roles are checked
     // again inside for company admins.
-    'GET people' => ['ws', 'admin'], 'POST people.update' => ['ws', 'admin'], 'POST people.invite' => ['ws', 'admin'],
+    // Editors can invite someone new to the production as a viewer or reviewer (production admins up to admin).
+    'GET people' => ['ws', 'admin'], 'POST people.update' => ['ws', 'admin'], 'POST people.invite' => ['ws', 'editor'],
     'POST people.link' => ['ws', 'admin'], 'POST people.delete' => ['ws', 'admin'],
 
     'GET settings' => ['org', 'admin'], 'POST settings.frameio' => ['org', 'admin'], 'POST settings.frameio.clear' => ['org', 'admin'],
@@ -297,14 +298,12 @@ switch ("$method $action") {
         );
         $st->execute([Ctx::wsId(), Ctx::orgId()]);
         json_out(['people' => array_map('member_public', $st->fetchAll()), 'roles' => ROLE_LABELS, 'org_roles' => ORG_ROLE_LABELS,
-            'me' => (int)$me['id'], 'company_role' => $power, 'can_company' => org_power_at_least($power, 'admin'),
+            'me' => (int)$me['id'], 'company_role' => $power, 'can_company' => org_power_at_least($power, 'admin'), 'can_invite' => true,
             'workspace' => ws_public(), 'mail' => mail_configured() ? mail_settings()['from'] : null]);
 
     case 'POST people.invite':
         $power = org_power($me, Ctx::$org, $real);
-        if (!org_power_at_least($power, 'admin')) {
-            fail('Only company admins can invite people. Ask them, or give access to someone already in the company.', 403);
-        }
+        $companyAdmin = org_power_at_least($power, 'admin');
         $orgRole = (string)($in['org_role'] ?? 'member');
         if (!isset(ORG_ROLES[$orgRole])) {
             fail('Unknown company role.');
@@ -315,6 +314,29 @@ switch ("$method $action") {
         $wsRole = (string)($in['role'] ?? '');
         if ($wsRole !== '' && !isset(ROLES[$wsRole])) {
             fail('Unknown role.');
+        }
+        if (!$companyAdmin) {
+            // Editors and production admins invite people to this production only, as company members, up to a role
+            // below their own (editors: viewer or reviewer; production admins: up to admin).
+            if ($orgRole !== 'member') {
+                fail('Only company admins can make someone a company admin or owner.', 403);
+            }
+            $max = Ctx::$role === 'admin' ? 'admin' : 'reviewer';
+            if ($wsRole === '') {
+                fail('Choose their role in this production.');
+            }
+            if (ROLES[$wsRole] > ROLES[$max]) {
+                fail('Editors can invite viewers and reviewers. Ask an admin to invite an editor or admin.', 403);
+            }
+            $known = user_by_email((string)($in['email'] ?? ''));
+            $m = $known ? membership_of(Ctx::orgId(), (int)$known['id']) : null;
+            if ($m && $m['status'] === 'invited' && $m['org_role'] !== 'member') {
+                fail('That person already has an invite from a company admin.', 403);
+            }
+            if ($m && $m['status'] === 'active') {
+                fail(Ctx::$role === 'admin' ? 'That person is already in the company. Give them access from People.'
+                    : 'That person is already in the company. Ask an admin of this production to give them access.');
+            }
         }
         $name = trim((string)($in['name'] ?? ''));
         [$uid, $token] = invite_member(Ctx::orgId(), $name, (string)($in['email'] ?? ''), $orgRole, Ctx::wsId(), $wsRole ?: null, (int)$me['id']);
@@ -327,10 +349,11 @@ switch ("$method $action") {
             'existing' => !empty($row['pass_hash'])]);
 
     case 'POST people.link':
-        if (!org_power_at_least(org_power($me, Ctx::$org, $real), 'admin')) {
-            fail('Only company admins can send invites.', 403);
-        }
         $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
+        // Production admins can resend invites of members they can give access to here.
+        if (!org_power_at_least(org_power($me, Ctx::$org, $real), 'admin') && ($row['org_role'] !== 'member' || !$row['ws_role'])) {
+            fail('Only company admins can send that invite.', 403);
+        }
         if ($row['mstatus'] !== 'invited') {
             fail('They’ve already joined. If they’ve forgotten their password, they can get a new one with “Forgot your password?” on the sign-in page.');
         }
@@ -376,10 +399,12 @@ switch ("$method $action") {
     case 'POST people.delete':
         // Take someone out of the company (their account and their other companies stay). Their notes stay too.
         $power = org_power($me, Ctx::$org, $real);
-        if (!org_power_at_least($power, 'admin')) {
+        $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
+        // Production admins can withdraw a pending invite to this production; removing members is for company admins.
+        $withdraw = $row['mstatus'] === 'invited' && $row['org_role'] === 'member' && $row['ws_role'];
+        if (!org_power_at_least($power, 'admin') && !$withdraw) {
             fail('Only company admins can remove people from the company. You can take away their access to this production instead.', 403);
         }
-        $row = member_row(int_in($in, 'id')) ?? fail('That person is no longer on the list.', 404);
         if ((int)$row['id'] === (int)$me['id']) {
             fail('You can’t remove yourself.');
         }

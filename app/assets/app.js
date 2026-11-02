@@ -2469,8 +2469,8 @@
 
   /* ---------- your account ---------- */
   const ROLE_HELP = {
-    admin: 'Everything an editor can, plus deleting versions and choosing who in the company can open this production.',
-    editor: 'Notes, statuses, versions, imports, edits, transcripts, tracks and approving script lines.',
+    admin: 'Everything an editor can, plus deleting versions and choosing who can open this production, including inviting new people.',
+    editor: 'Notes, statuses, versions, imports, edits, transcripts, tracks and approving script lines. Can invite viewers and reviewers.',
     reviewer: 'Adds notes and replies, and suggests script wording as drafts. Can’t change statuses or approve.',
     viewer: 'Watches and reads. Can’t change anything.',
   };
@@ -2549,6 +2549,48 @@
   }
 
   const COMPANY_NAMES = { owner: 'Owner', admin: 'Company admin', member: 'Member' };
+  /*
+   * The invite form. Company admins choose the company role too; production admins invite members up to Admin,
+   * editors up to Reviewer (the server checks the same).
+   */
+  function inviteForm({ canCompany, companyRole, mail, ws, company, done }) {
+    const top = canCompany || ROLE === 'admin' ? 'admin' : 'reviewer';
+    const iname = el('input', { maxlength: 60, required: true, autocomplete: 'off' });
+    const iemail = el('input', { type: 'email', required: true, autocomplete: 'off' });
+    const irole = el('select', { 'aria-label': `Role in ${ws.name}` },
+      canCompany ? el('option', { value: '', text: 'No access' }) : null,
+      ...['viewer', 'reviewer', 'editor', 'admin'].filter((r) => RANK[r] <= RANK[top]).map((r) => el('option', { value: r, text: ROLE_NAMES[r], selected: r === 'reviewer' })));
+    const icompany = canCompany ? el('select', { 'aria-label': 'Role in the company', onchange: () => { irole.disabled = icompany.value !== 'member'; } },
+      ...['member', 'admin', 'owner'].filter((r) => r !== 'owner' || companyRole === 'owner').map((r) => el('option', { value: r, text: COMPANY_NAMES[r] }))) : null;
+    const isend = el('input', { type: 'checkbox', checked: !!mail });
+    return [
+      el('h3', { text: 'Invite someone' }),
+      canCompany ? null : el('p', { class: 'small', text: `They join ${company} with access to ${ws.name} only.${top === 'reviewer' ? ' Editors invite viewers and reviewers; an admin can change their role later.' : ''}` }),
+      el('form', { class: 'invite', onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          const orgRole = icompany ? icompany.value : 'member';
+          const r = await api('people.invite', { body: { name: iname.value, email: iemail.value, role: orgRole === 'member' ? irole.value : '', org_role: orgRole, send: !!mail && isend.checked } });
+          done(linkBox({ ...r, kind: 'invite', expires: `${r.days} days`, company },
+            r.existing ? `${r.person.name} already has an account, so the link just asks them to sign in and join:` : `Invite link for ${r.person.name}:`));
+        } catch (err) { fail(err); }
+      } },
+      el('div', { class: 'invite-grid' },
+        el('label', {}, 'Name', iname), el('label', {}, 'Email', iemail),
+        el('label', {}, `Role in ${ws.name}`, irole), icompany ? el('label', {}, 'In the company', icompany) : null),
+      mail ? el('label', { class: 'inline' }, isend, ` Email the invite from ${mail}`) : null,
+      el('div', { class: 'dlg-actions' },
+        el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
+        el('button', { class: 'btn primary', text: mail ? 'Invite' : 'Create invite link' }))),
+    ];
+  }
+
+  /* Editors: invite a viewer or reviewer to this production. */
+  function openInvite(notice) {
+    const ws = S.ws;
+    showDialog(el('h2', { text: `Invite someone to ${ws.name}` }), notice || null,
+      ...inviteForm({ canCompany: false, companyRole: '', mail: S.conn.mail, ws, company: ws.org.name, done: (box) => openInvite(box) }).slice(1));
+  }
   async function openPeople(notice) {
     let d;
     try { d = await api('people'); } catch (e) { fail(e); return; }
@@ -2584,45 +2626,19 @@
         access,
         d.can_company ? companySel(p.org_role, (e) => upd(p, { org_role: e.target.value }, `${p.name} is now ${COMPANY_NAMES[e.target.value]} of ${company}.`)) : null,
         el('div', { class: 'prow-acts' },
-          d.can_company && p.status === 'invited' ? B(d.mail ? 'Email a new invite' : 'New invite link', () => link(p)) : null,
-          d.can_company && !self ? B(p.status === 'invited' ? 'Withdraw' : 'Remove…', async () => {
+          (d.can_company || (p.org_role === 'member' && p.ws_role)) && p.status === 'invited' ? B(d.mail ? 'Email a new invite' : 'New invite link', () => link(p)) : null,
+          !self && (d.can_company || (p.status === 'invited' && p.org_role === 'member' && p.ws_role)) ? B(p.status === 'invited' ? 'Withdraw' : 'Remove…', async () => {
             if (!confirm(p.status === 'invited' ? `Withdraw ${p.name}’s invite?` : `Remove ${p.name} from ${company}? They lose access to all its productions straight away. Their notes and history stay, under their name.`)) return;
             try { await api('people.delete', { body: { id: p.id } }); toast(`${p.name} removed.`); openPeople(); } catch (err) { fail(err); }
           }, 'btn ghost danger') : null));
     };
-    let invite = null;
-    if (d.can_company) {
-      const iname = el('input', { maxlength: 60, required: true, autocomplete: 'off' });
-      const iemail = el('input', { type: 'email', required: true, autocomplete: 'off' });
-      const irole = accessSel('reviewer', null);
-      const icompany = companySel('member', () => { irole.disabled = icompany.value !== 'member'; });
-      const isend = el('input', { type: 'checkbox', checked: !!d.mail });
-      invite = [
-        el('h3', { text: 'Invite someone' }),
-        el('form', { class: 'invite', onsubmit: async (e) => {
-          e.preventDefault();
-          try {
-            const r = await api('people.invite', { body: { name: iname.value, email: iemail.value, role: icompany.value === 'member' ? irole.value : '', org_role: icompany.value, send: !!d.mail && isend.checked } });
-            openPeople(linkBox({ ...r, kind: 'invite', expires: `${r.days} days`, company },
-              r.existing ? `${r.person.name} already has an account, so the link just asks them to sign in and join:` : `Invite link for ${r.person.name}:`));
-          } catch (err) { fail(err); }
-        } },
-        el('div', { class: 'invite-grid' },
-          el('label', {}, 'Name', iname), el('label', {}, 'Email', iemail),
-          el('label', {}, `Role in ${ws.name}`, irole), el('label', {}, 'In the company', icompany)),
-        d.mail ? el('label', { class: 'inline' }, isend, ` Email the invite from ${d.mail}`) : null,
-        el('div', { class: 'dlg-actions' },
-          el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
-          el('button', { class: 'btn primary', text: d.mail ? 'Invite' : 'Create invite link' }))),
-      ];
-    }
+    const invite = inviteForm({ canCompany: d.can_company, companyRole: d.company_role, mail: d.mail, ws, company, done: (box) => openPeople(box) });
     showDialog(
       el('h2', { text: 'People' }),
       el('p', { class: 'small', text: `Everyone in ${company}, and what they can do in ${ws.name}. People without access can’t see this production at all.` }),
       notice || null,
       el('ul', { class: 'plist' }, ...d.people.map(row)),
-      ...(invite || [el('p', { text: `To invite someone new to ${company}, ask a company admin. You can give access to anyone already on this list.` }),
-        el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn ghost', text: 'Close', onclick: closeDialog }))]),
+      ...invite,
       el('details', { class: 'roles-help' }, el('summary', { text: 'What each role can do' }),
         el('dl', {}, ...['admin', 'editor', 'reviewer', 'viewer'].flatMap((r) => [el('dt', { text: ROLE_NAMES[r] }), el('dd', { text: ROLE_HELP[r] })]),
           el('dt', { text: 'Company admin' }), el('dd', { text: 'An admin in every production of the company. Invites and removes people, makes and archives productions, and connects Frame.io and ElevenLabs.' }),
@@ -2906,6 +2922,7 @@
           ...(companyAdmin() ? ['Company admins also invite people, remove them from the company, and make or archive productions (Company and productions).',
             'Settings and connections: Frame.io and ElevenLabs for the whole company.'] : ['Inviting someone new is for company admins.']),
           'The production picker at the top left switches between your productions.')) : null,
+      can('editor') && !can('admin') ? sec('Inviting people', false, L('Invite someone (your name menu) brings a viewer or reviewer into this production. An admin can change their role later.')) : null,
       el('p', { class: 'small', text: `In this production you’re ${ROLE_NAMES[ROLE] || 'a viewer'}.${companyAdmin() ? ' As a company admin you also invite people and make productions (your name menu → People, Company and productions).' : ''} The README that came with the app has the full guide.` }),
       el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn primary', text: 'Close', onclick: closeDialog })));
   }
@@ -2930,6 +2947,7 @@
   $('settingsBtn')?.addEventListener('click', openSettings);
   $('peopleBtn')?.addEventListener('click', () => openPeople());
   $('companyBtn')?.addEventListener('click', openCompany);
+  $('inviteBtn')?.addEventListener('click', () => openInvite());
   $('platformBtn')?.addEventListener('click', () => openPlatform());
   $('wsSelect')?.addEventListener('change', (e) => { location.href = `./?ws=${e.target.value}`; });
   $('impStop')?.addEventListener('click', async () => {

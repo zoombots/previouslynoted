@@ -84,8 +84,8 @@ Company admins can't reset a person's password or turn their account off: the ac
 
 | Role | Can do |
 |---|---|
-| `admin` | Everything an editor can, plus delete versions and give or take away production access for people already in the company. |
-| `editor` | Notes, versions, imports, edits, transcripts, tracks, placing notes, Frame.io sync and push, approving script lines. |
+| `admin` | Everything an editor can, plus delete versions, give or take away production access for people already in the company, and invite new people to the production (any production role); resend or withdraw those invites. |
+| `editor` | Notes, versions, imports, edits, transcripts, tracks, placing notes, Frame.io sync and push, approving script lines. Invite new people to the production as viewer or reviewer. |
 | `reviewer` | Add notes, reply, reword their own notes, suggest script lines as drafts. |
 | `viewer` | Read only. |
 
@@ -123,7 +123,7 @@ Connections follow the company: `conn_reload()` merges the `platform` scope and 
 
 Following Flexboard §6, and today's link-based invites:
 
-- A company admin invites by name and email, with a company role and (optionally) a role in the current production. This creates the `memberships` row with `status = 'invited'` and a one-time token (only its SHA-256 is stored, 7 days), plus the `workspace_access` row. The link is emailed when outgoing email is set up, and always shown to copy.
+- A company admin invites by name and email, with a company role and (optionally) a role in the current production. **Deviation from Flexboard §6:** production editors and admins can also invite, but only as company `member`s with a role in their own production (editors: viewer or reviewer; production admins: up to admin), and never over a pending invite from a company admin or someone already in the company. This creates the `memberships` row with `status = 'invited'` and a one-time token (only its SHA-256 is stored, 7 days), plus the `workspace_access` row. The link is emailed when outgoing email is set up, and always shown to copy.
 - If the email has no account yet, a `users` row without a password is created. Opening the link asks for their name and a password, then signs them in.
 - If the email already has an account, opening the link asks them to sign in (or uses the session if they already are, as that person), then activates the membership. Nobody can join a company with someone else's link: the signed-in email must match.
 - A pending invite can be sent again (new token) or withdrawn (the membership is removed).

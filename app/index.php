@@ -486,6 +486,8 @@ page_head(($cur ? $cur['name'] . ' · ' : '') . $cfg['app_name']); ?>
       <button type="button" role="menuitem" id="accountBtn">Your account and password</button>
       <?php if ($cur && $cur['role'] === 'admin'): ?>
       <button type="button" role="menuitem" id="peopleBtn">People</button>
+      <?php elseif ($cur && $cur['role'] === 'editor'): ?>
+      <button type="button" role="menuitem" id="inviteBtn">Invite someone</button>
       <?php endif; ?>
       <?php if ($cur && ($power === 'support' || org_power_at_least($power, 'admin'))): ?>
       <button type="button" role="menuitem" id="companyBtn">Company and productions</button>

@@ -144,8 +144,8 @@ What someone can do in a production:
 
 | Role | Can |
 | --- | --- |
-| Admin | Everything an editor can, plus deleting versions and choosing who in the company can open the production |
-| Editor | Notes and statuses, versions, imports, edits, transcripts, tracks, approving script lines |
+| Admin | Everything an editor can, plus deleting versions and choosing who can open the production (inviting anyone new, at any role) |
+| Editor | Notes and statuses, versions, imports, edits, transcripts, tracks, approving script lines, inviting viewers and reviewers |
 | Reviewer | Add notes and replies, suggest script wording as drafts. Can't change statuses or approve |
 | Viewer | Watch and read only |
 
@@ -160,7 +160,7 @@ And in the company:
 **People** (production admins and company admins) lists everyone in the company with their role in the production you're on:
 
 - **Give access:** pick a role next to someone, or *No access* to take it away. It applies at once.
-- **Invite** (company admins): enter a name, email, their role in this production and in the company, then **Invite**. With email set up, the invite is emailed, with you as the reply-to; without it, copy the link or press **Email it**. The link works once, for 7 days, only for that email address. Someone who already has an account (with another company) just signs in to join.
+- **Invite:** enter a name, email and their role in this production (company admins also choose their role in the company), then **Invite**. Production admins can invite with any role; editors can invite viewers and reviewers too, from **Invite someone** in their name menu. People invited this way join the company as members with access to that production only. With email set up, the invite is emailed, with you as the reply-to; without it, copy the link or press **Email it**. The link works once, for 7 days, only for that email address. Someone who already has an account (with another company) just signs in to join.
 - **Forgotten password:** everyone resets their own with **Forgot your password?** on the sign-in page (by email). Company admins can't reset passwords, because an account can belong to other companies too.
 - **Remove** takes someone out of the company and all its productions at once. Their account and their notes stay.
 
