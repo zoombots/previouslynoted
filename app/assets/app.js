@@ -1723,11 +1723,11 @@
         onkeydown: (e) => {
           if (e.target !== e.currentTarget) return;
           if (e.key === 'Enter') seekFrame(g.start);
-          else if ((e.key === 'x' || e.key === 'Delete' || e.key === 'Backspace') && canCross()) { e.preventDefault(); e.stopPropagation(); toggleCross(i); }
+          else if ((e.key === 'x' || e.key === 'Delete' || e.key === 'Backspace') && canCrossLine(i)) { e.preventDefault(); e.stopPropagation(); toggleCross(i); }
         } },
         el('span', { class: 'seg-tc', text: tc(g.start) }),
         el('div', { class: 'seg-main' + (crossed ? ' crossed' : '') },
-          canCross() ? el('button', { type: 'button', class: 'seg-x', 'aria-label': crossed ? 'Restore this line' : 'Cross out this line',
+          canCrossLine(i) ? el('button', { type: 'button', class: 'seg-x', 'aria-label': crossed ? 'Restore this line' : 'Cross out this line',
             title: crossed ? 'Restore this line' : 'Cross out this line (X or Delete)', text: crossed ? '↺' : '✕',
             onclick: (e) => { e.stopPropagation(); toggleCross(i); } }) : null,
           g.speaker ? el('button', { type: 'button', class: 'seg-speaker', text: g.speaker, title: can('editor') ? 'Rename this speaker throughout' : g.speaker, onclick: (e) => { e.stopPropagation(); if (can('editor')) renameSpeaker(g.speaker); } }) : null,
@@ -1768,10 +1768,17 @@
       if (undoMsg) toast(undoMsg, { label: 'Undo', run: () => saveLine(i, slot, before?.state || 'same', before?.text || '') });
     } catch (e) { fail(e); }
   }
-  // Editors cross out a line of the transcript (and bring it back) right from the list.
-  const canCross = () => can('editor') && !SHARE && !!S.scriptEdits.transcriptId && S.script.activeId === S.script.latestId;
+  // Editors cross out a line of the transcript (and bring it back) right from the list. Guests whose share link
+  // allows script changes can too, except approved lines, and they restore only what they crossed out.
+  const canCross = () => (SHARE ? canScript() : can('editor')) && !!S.scriptEdits.transcriptId && S.script.activeId === S.script.latestId;
+  const canCrossLine = (i) => {
+    if (!canCross()) return false;
+    if (!SHARE) return true;
+    const own = S.scriptEdits.lines.get(`${i}:0`);
+    return own?.state === 'cut' ? own.by === S.user : own?.state !== 'approved';
+  };
   function toggleCross(i) {
-    if (!canCross()) return;
+    if (!canCrossLine(i)) return;
     const own = S.scriptEdits.lines.get(`${i}:0`);
     if (own?.state === 'cut') saveLine(i, 0, 'same', '', 'Line restored.');
     else saveLine(i, 0, 'cut', '', 'Line crossed out.');
@@ -1809,6 +1816,8 @@
         if (state === 'same') acts.push(B('Suggest a rewrite', () => edit()));
         if (state === 'draft') acts.push(B('Edit draft', () => edit()));
         if (state === 'draft' && L.by === S.user) acts.push(B(slot ? 'Delete line' : 'Withdraw', () => save(slot ? 'removed' : 'same', '', slot ? 'Line deleted.' : 'Suggestion withdrawn.')));
+        if (SHARE && slot === 0 && (state === 'same' || state === 'draft')) acts.push(B('Cross out', () => save('cut', '', 'Line crossed out.')));
+        if (SHARE && slot === 0 && state === 'cut' && L.by === S.user) acts.push(B('Restore', () => save('same', '', 'Line restored.')));
         if (slot === 0 && state !== 'cut') acts.push(B('+ Line after', () => edit(`${i}:new`)));
       }
     } else {
@@ -2862,7 +2871,7 @@
           can('editor') ? 'Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download the recording script for the VO session.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
-          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can suggest script changes (as drafts you approve). Their notes carry a guest chip.',
+          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',
           'Tracks… (next to Add note here) adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
           'Notes out, on each version: Markers… downloads a marker file for Avid, Resolve or Premiere at the version’s timecode; Post to Frame.io… adds the notes as comments on the linked Frame.io file.')) : null,
       can('admin') ? sec('Admin', false,

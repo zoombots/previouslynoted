@@ -1028,7 +1028,11 @@ switch ("$method $action") {
             $cur = $curLine['state'] ?? 'same';
             // Reviewers suggest drafts, and can take back a draft of their own (back to the original, or delete an added line).
             $withdraw = $cur === 'draft' && ($curLine['by'] ?? '') === $user && ($state === ($slot > 0 ? 'removed' : 'same'));
-            if (!$withdraw && ($state !== 'draft' || in_array($cur, ['approved', 'cut'], true))) {
+            // Guests whose link allows script changes can also cross out a line (not an approved one), and restore
+            // lines they crossed out themselves.
+            $guestCross = $share && $slot === 0 && (($state === 'cut' && in_array($cur, ['same', 'draft'], true))
+                || ($state === 'same' && $cur === 'cut' && ($curLine['by'] ?? '') === $user));
+            if (!$withdraw && !$guestCross && ($state !== 'draft' || in_array($cur, ['approved', 'cut'], true))) {
                 fail('Reviewers can suggest new wording as a draft, and take back their own drafts. Approving, crossing out or changing an approved line is for editors.', 403);
             }
         }

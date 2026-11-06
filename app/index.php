@@ -339,7 +339,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
   <details class="who" id="whoMenu">
     <summary title="You" data-initial="<?= h(mb_strtoupper(mb_substr($me['name'], 0, 1))) ?>"><span class="me-name"><?= h($me['name']) ?></span> <span class="role-tag">Guest</span></summary>
     <div class="menu-pop" role="menu">
-      <p class="menu-note">You’re a guest on <?= h($share['film_name'] . ' · ' . $share['version_label']) ?>. <?= (int)$share['can_comment'] ? 'Your notes and replies show your name.' : 'You can watch and read the notes.' ?><?= (int)$share['can_script'] ? ' Script wording you suggest is saved as a draft for the team.' : '' ?></p>
+      <p class="menu-note">You’re a guest on <?= h($share['film_name'] . ' · ' . $share['version_label']) ?>. <?= (int)$share['can_comment'] ? 'Your notes and replies show your name.' : 'You can watch and read the notes.' ?><?= (int)$share['can_script'] ? ' In the script you can suggest new wording (a draft for the team), cross lines out, and delete lines you added.' : '' ?></p>
       <a role="menuitem" href="?share=<?= h($share['token']) ?>&amp;rename=1">Change your name</a>
       <button type="button" role="menuitem" id="helpBtn">Help and shortcuts <kbd>?</kbd></button>
     </div>

@@ -138,11 +138,36 @@ const watch = (page, errors) => {
       draft: await call('script.edit', { version_id: vid, transcript_id: sc[1].transcript_id, seg_idx: 0, slot: 0, state: 'draft', text: 'Wendy’s new opening line' }),
       approve: await call('script.edit', { version_id: vid, transcript_id: sc[1].transcript_id, seg_idx: 1, slot: 0, state: 'approved', text: 'Approved by a guest?' }),
       note: await call('note.create', { version_id: vid, frame: 10, text: 'x' }),
+      cross: await call('script.edit', { version_id: vid, transcript_id: sc[1].transcript_id, seg_idx: 5, slot: 0, state: 'cut', text: '' }),
+      restore: await call('script.edit', { version_id: vid, transcript_id: sc[1].transcript_id, seg_idx: 5, slot: 0, state: 'same', text: '' }),
+      approved: sc[1].lines.find((l) => l.slot === 0 && l.state === 'approved'),
+      tid: sc[1].transcript_id,
     };
   }, +version);
   check(sres.draft[0] === 200, 'script guest suggests a draft: ' + JSON.stringify(sres.draft).slice(0, 200));
   check(sres.approve[0] === 403, 'script guest can’t approve');
   check(sres.note[0] === 403, 'script guest can’t add notes');
+  check(sres.cross[0] === 200 && sres.restore[0] === 200, 'script guest crosses out and restores: ' + JSON.stringify([sres.cross[0], sres.restore[0]]));
+  if (sres.approved) {
+    const st = await sp.evaluate(async ([vid, tid, i]) => {
+      const q = new URLSearchParams({ action: 'script.edit', share: document.body.dataset.share });
+      const r = await fetch('api.php?' + q, { method: 'POST', headers: { 'X-CSRF-Token': document.body.dataset.csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version_id: vid, transcript_id: tid, seg_idx: i, slot: 0, state: 'cut', text: '' }) });
+      return r.status;
+    }, [+version, sres.tid, sres.approved.i]);
+    check(st === 403, 'script guest can’t cross out an approved line: ' + st);
+  }
+  await sp.click('#tabScript');
+  await sp.waitForSelector('#script .tline', { timeout: 10000 });
+  const sl = sp.locator('#script li.tline[data-i="6"]');
+  await sl.hover();
+  check(await sl.locator('.seg-x').isVisible(), 'script guest sees the cross-out button');
+  await sl.locator('.seg-x').click();
+  await sp.waitForTimeout(700);
+  check(await sp.locator('#script li.tline[data-i="6"] .seg-main.crossed').count() === 1, 'script guest crossed out from the list');
+  await sp.locator('#script li.tline[data-i="6"] .seg-x').click();
+  await sp.waitForTimeout(700);
+  check(await sp.locator('#script li.tline[data-i="6"] .seg-main.crossed').count() === 0, 'script guest restored it');
   // And the notes-only guest can't touch the script.
   const nres = await g.evaluate(async (vid) => {
     const q = new URLSearchParams({ action: 'script.edit', share: document.body.dataset.share });
