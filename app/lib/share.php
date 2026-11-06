@@ -17,8 +17,18 @@ const SHARE_VIEWS = ['review' => 'Review', 'script' => 'Script', 'playback' => '
 /** The actions a guest may use. Each one is also checked against the link's film and version in api.php. */
 const GUEST_ACTIONS = [
     'GET state', 'GET notes', 'GET transcript', 'GET script', 'GET version.media', 'GET transcribe.status',
-    'POST note.create', 'POST note.reply', 'POST note.edit',
+    'POST note.create', 'POST note.reply', 'POST note.edit', 'POST script.edit',
 ];
+
+/** What a link allows beyond watching: notes and replies, and suggesting script wording. */
+function share_allows(array $share, string $action): bool
+{
+    return match ($action) {
+        'note.create', 'note.reply', 'note.edit' => (bool)(int)$share['can_comment'],
+        'script.edit' => (bool)(int)($share['can_script'] ?? 0),
+        default => true,
+    };
+}
 
 /** A link that still works, or null. */
 function share_by_token(string $token): ?array
@@ -49,7 +59,9 @@ function share_set_guest_name(array $share, string $name): void
 /** A stand-in account for a guest, so the rest of the API can treat them like a reviewer (or viewer). */
 function guest_account(array $share, string $name): array
 {
-    return ['id' => 0, 'name' => $name, 'email' => '', 'role' => (int)$share['can_comment'] ? 'reviewer' : 'viewer', 'status' => 'active',
+    // Reviewer when the link allows any changes (share_allows() says which), else viewer.
+    $acts = (int)$share['can_comment'] || (int)($share['can_script'] ?? 0);
+    return ['id' => 0, 'name' => $name, 'email' => '', 'role' => $acts ? 'reviewer' : 'viewer', 'status' => 'active',
         'last_login' => null, 'created_at' => $share['created_at'], 'token_hash' => null, 'token_expires' => null, 'token_kind' => null,
         'locked_until' => 0, 'guest' => true, 'share_id' => (int)$share['id']];
 }
@@ -58,7 +70,7 @@ function guest_account(array $share, string $name): array
 function share_public(array $s): array
 {
     return ['id' => (int)$s['id'], 'link' => app_base_url() . '?share=' . $s['token'], 'view' => $s['view'], 'can_comment' => (bool)$s['can_comment'],
-        'label' => $s['label'], 'created_by' => $s['created_by'], 'created_at' => $s['created_at'],
+        'can_script' => (bool)(int)($s['can_script'] ?? 0), 'label' => $s['label'], 'created_by' => $s['created_by'], 'created_at' => $s['created_at'],
         'expires_at' => $s['expires_at'] ? gmdate('Y-m-d\TH:i:s\Z', (int)$s['expires_at']) : null,
         'last_used_at' => $s['last_used_at'], 'uses' => (int)$s['uses']];
 }

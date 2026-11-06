@@ -11,6 +11,9 @@
   // Someone outside the team on a share link: one version, in the view the link was made with.
   const SHARE = document.body.dataset.share || '';
   const SHARE_VIEW = document.body.dataset.shareView || '';
+  // What a share link lets its guest do: add notes and replies, and suggest script wording (as drafts).
+  const canNote = () => can('reviewer') && (!SHARE || 'shareComment' in document.body.dataset);
+  const canScript = () => can('reviewer') && (!SHARE || 'shareScript' in document.body.dataset);
 
   const STATUS = {
     open:       { label: 'Open',          verb: 'Reopen',          done: false },
@@ -1267,7 +1270,7 @@
   }
 
   // The note's wording, with Reword for editors (any note) and reviewers (their own notes).
-  const canReword = (n) => can('editor') || (can('reviewer') && n.author === S.user);
+  const canReword = (n) => can('editor') || (canNote() && n.author === S.user);
   function noteText(n) {
     if (S.editingNote === n.id) {
       const ta = el('textarea', { class: 'reword', rows: 3, 'aria-label': 'Note text' });
@@ -1361,7 +1364,7 @@
             : `${STATUS[e.status]?.label || e.status} by ${e.by_name}${e.version_label ? ' on ' + e.version_label : ''}`)
             + ` · ${fmtDate(e.at)}${e.comment && e.by_name !== 'Frame.io import' ? ' — “' + e.comment + '”' : ''}` })))),
       // Pinned to the bottom of the card, so the decision is always in reach however long the note is.
-      !can('reviewer') ? null : el('div', { class: 'actions' },
+      !canNote() ? null : el('div', { class: 'actions' },
         ta,
         el('div', { class: 'row' },
           el('button', { type: 'button', class: 'btn', text: 'Reply', title: 'Send the reply (Ctrl+Enter). R puts the cursor in the box.', onclick: reply }),
@@ -1777,7 +1780,7 @@
     const acts = [];
     if (!can('editor')) {
       // Reviewers suggest wording as drafts; viewers only read.
-      if (can('reviewer')) {
+      if (canScript()) {
         if (state === 'same') acts.push(B('Suggest a rewrite', () => edit()));
         if (state === 'draft') acts.push(B('Edit draft', () => edit()));
         if (slot === 0 && state !== 'cut') acts.push(B('+ Line after', () => edit(`${i}:new`)));
@@ -1796,13 +1799,13 @@
         el('ol', {}, ...[...L.history].reverse().map((h, k) => el('li', {},
           el('span', { class: 'line-state', text: LINE_LABEL[h.state] || 'Original' }), ` ${h.by} · ${fmtDate(h.at)}`,
           h.text ? el('p', { text: h.text }) : null,
-          k > 0 && h.text && (can('editor') || (can('reviewer') && state === 'draft')) ? B('Use this wording', () => save('draft', h.text)) : null)))));
+          k > 0 && h.text && (can('editor') || (canScript() && state === 'draft')) ? B('Use this wording', () => save('draft', h.text)) : null)))));
     }
     return cell;
   }
 
   function addNoteBox(g) {
-    if (!can('reviewer')) return null;
+    if (!canNote()) return null;
     const narration = S.cats.find((c) => c.kind === 'narration') || S.cats[0];
     const input = el('input', { type: 'text', placeholder: `+ Note on this line${narration ? ' (' + narration.key + ')' : ''}`, 'aria-label': 'Add a note on this line',
       onkeydown: async (e) => {
@@ -1911,7 +1914,19 @@
 
   /* ---------- dialogs ---------- */
   const dlg = $('dlg');
-  function showDialog(...kids) { dlg.replaceChildren(...kids.filter((k) => k != null && k !== false)); if (!dlg.open) dlg.showModal(); }
+  // lightDismiss: a click outside the box closes it (for dialogs with nothing to lose, like Share).
+  function showDialog(...kids) {
+    let light = false;
+    if (kids[0] && kids[0].lightDismiss) { light = true; kids = kids.slice(1); }
+    dlg.replaceChildren(...kids.filter((k) => k != null && k !== false));
+    dlg.dataset.light = light ? '1' : '';
+    if (!dlg.open) dlg.showModal();
+  }
+  dlg.addEventListener('click', (e) => {
+    if (e.target !== dlg || dlg.dataset.light !== '1') return;
+    const r = dlg.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dlg.close();
+  });
   const closeDialog = () => dlg.close();
 
   // Frame.io page links (share, review, view) open a web page, not a video file.
@@ -2030,13 +2045,15 @@
     try { d = await api('shares', { query: { version_id: v.id } }); } catch (e) { fail(e); return; }
     const viewSel = el('select', {}, ...Object.entries(VIEW_NAMES).map(([k, t]) => el('option', { value: k, text: t, selected: k === view })));
     const comment = el('input', { type: 'checkbox', checked: true });
+    const scriptOk = el('input', { type: 'checkbox' });
     const days = el('select', {}, el('option', { value: '7', text: 'for 7 days' }), el('option', { value: '30', text: 'for 30 days', selected: true }),
       el('option', { value: '0', text: 'until I turn it off' }));
     const label = el('input', { maxlength: 80, placeholder: 'Who it’s for (optional), e.g. Broadcaster' });
     const copy = (link) => { navigator.clipboard?.writeText(link); toast('Link copied'); };
     const row = (sh) => el('li', { class: 'prow' + (fresh === sh.id ? ' fresh' : '') },
       el('div', { class: 'prow-who' },
-        el('strong', { text: (sh.label || 'Share link') + ` · ${VIEW_NAMES[sh.view]}` + (sh.can_comment ? ', can add notes' : ', watch only') }),
+        el('strong', { text: (sh.label || 'Share link') + ` · ${VIEW_NAMES[sh.view]}`
+          + (sh.can_comment || sh.can_script ? ', can ' + [sh.can_comment && 'add notes', sh.can_script && 'suggest script changes'].filter(Boolean).join(' and ') : ', watch only') }),
         el('small', { text: `Made by ${sh.created_by} ${fmtDate(sh.created_at)}` + (sh.expires_at ? ` · works until ${fmtDate(sh.expires_at)}` : '')
           + (sh.uses ? ` · opened ${sh.uses}×` : ' · not opened yet') + (sh.guests.length ? ` · notes from ${sh.guests.join(', ')}` : '') }),
         el('div', { class: 'copyrow two' }, el('code', { text: sh.link }),
@@ -2045,13 +2062,13 @@
         if (!confirm('Turn this link off? Anyone using it loses access straight away. Notes they added stay.')) return;
         try { await api('share.revoke', { body: { id: sh.id } }); toast('Link turned off.'); openShare(); } catch (err) { fail(err); }
       } })));
-    showDialog(
+    showDialog({ lightDismiss: true },
       el('h2', { text: `Share ${v.label}` }),
-      el('p', { class: 'small', text: 'Send a link to someone outside the team: a producer, a broadcaster, a composer. They don’t need an account. They type their name when they open it, and see only this cut, in the view you choose. Notes they add show their name and a guest chip.' }),
+      el('p', { class: 'small', text: 'Send a link to someone outside the team: a producer, a broadcaster, a composer. They don’t need an account. They type their name when they open it, and see only this cut, in the view you choose. Notes they add show their name and a guest chip. Script changes they suggest stay drafts until someone on the team approves them.' }),
       el('form', { class: 'invite', onsubmit: async (e) => {
         e.preventDefault();
         try {
-          const r = await api('share.create', { body: { version_id: v.id, view: viewSel.value, can_comment: comment.checked, days: +days.value, label: label.value } });
+          const r = await api('share.create', { body: { version_id: v.id, view: viewSel.value, can_comment: comment.checked, can_script: scriptOk.checked, days: +days.value, label: label.value } });
           copy(r.share.link);
           openShare(r.share.id);
         } catch (err) { fail(err); }
@@ -2059,6 +2076,7 @@
         el('div', { class: 'invite-grid' },
           el('label', {}, 'They see', viewSel), el('label', {}, 'Link works', days), el('label', {}, 'Label', label)),
         el('label', { class: 'inline' }, comment, ' They can add notes and replies'),
+        el('label', { class: 'inline' }, scriptOk, ' They can suggest script changes (as drafts the team approves)'),
         el('div', { class: 'dlg-actions' },
           el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
           el('button', { class: 'btn primary', text: 'Make a link and copy it' }))),
@@ -2780,9 +2798,9 @@
           ...keyRow(el('span', { class: 'keys' }, el('kbd', { text: 'K' }), ' + ', el('kbd', { text: 'J' }), el('span', { class: 'or', text: '/' }), el('kbd', { text: 'L' })), 'Hold K and tap J or L to step one frame'),
           ...keyRow(K('←', '→'), 'One frame back or forward (with Shift: one second)'),
           ...keyRow(K('P', 'N'), 'Previous or next note'),
-          ...(can('reviewer') ? keyRow(K('M'), 'Add a note at the playhead') : []),
+          ...(canNote() ? keyRow(K('M'), 'Add a note at the playhead') : []),
           ...(can('editor') ? keyRow(K('A', 'D', 'W'), 'Mark the current note Addressed, To discuss or Won’t do (Undo in the message that appears)') : []),
-          ...(can('reviewer') ? keyRow(K('R'), 'Reply to the current note (Ctrl+Enter sends)') : []),
+          ...(canNote() ? keyRow(K('R'), 'Reply to the current note (Ctrl+Enter sends)') : []),
           ...keyRow(K('↑', '↓'), 'In the notes list: previous or next note'),
           ...(can('editor') ? keyRow(K('O'), 'End the current note at the playhead') : []),
           ...keyRow(K('+', '−'), `Zoom the timeline in or out (also ${cmd} + and ${cmd} −)`),
@@ -2795,8 +2813,8 @@
           'The note at the playhead shows under the picture; the narration line shows just above it.',
           'Click a note in the list or on the timeline to jump to it. Follow playback keeps the list in step.',
           'The counts at the top (open, addressed, to discuss, done) are filters: click one, click again to clear.',
-          can('reviewer') ? 'Reply under any note. Press M, or Add note here, to leave a new note at the playhead.' : null,
-          can('editor') ? 'Reword changes a note’s text (the old wording stays in its history).' : can('reviewer') ? 'Reword changes the text of your own notes.' : null,
+          canNote() ? 'Reply under any note. Press M, or Add note here, to leave a new note at the playhead.' : null,
+          can('editor') ? 'Reword changes a note’s text (the old wording stays in its history).' : canNote() ? 'Reword changes the text of your own notes.' : null,
           can('editor') ? 'Set a status with the buttons at the bottom of the note: Addressed, Discuss, Won’t do, and under More: Approve, Cut from film, Superseded, Reopen. Type in the box first to say why. Each change can be undone from the message that appears.' : null)),
       sec('Timeline', false,
         L('Drag the ruler (or the playhead) to scrub; click anywhere to jump; drag empty space to move along; scroll to zoom.',
@@ -2814,11 +2832,11 @@
       sec('Transcript and script', false,
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
-          can('reviewer') && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
+          canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
           can('editor') ? 'Rewrite, cut or add lines; approve them when final. Download the recording script for the VO session.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
-          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. Their notes carry a guest chip.',
+          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can suggest script changes (as drafts you approve). Their notes carry a guest chip.',
           'Tracks… (next to Add note here) adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
           'Notes out, on each version: Markers… downloads a marker file for Avid, Resolve or Premiere at the version’s timecode; Post to Frame.io… adds the notes as comments on the linked Frame.io file.')) : null,
       can('admin') ? sec('Admin', false,
@@ -2893,7 +2911,7 @@
     $('scriptFile').closest('label').hidden = true;
   }
   $('tracksBtn').addEventListener('click', () => openTracks());
-  if (!can('reviewer')) $('addBtn').hidden = true;
+  if (!canNote()) $('addBtn').hidden = true;
   $('streamBtn').addEventListener('click', () => streamFrameio().catch(fail));
   $('quality').addEventListener('change', () => streamFrameio(S.frame).catch(fail));
   $('transcribeBtn').addEventListener('click', () => S.versionId && startTranscribe(S.versionId).catch(fail));
@@ -2950,7 +2968,7 @@
     else if (k === 'ArrowLeft') { e.preventDefault(); stepFrames(e.shiftKey ? -tcBase() : -1); }
     else if (k === 'n') jumpNote(1);
     else if (k === 'p') jumpNote(-1);
-    else if (k === 'm' && can('reviewer')) openAddNote();
+    else if (k === 'm' && canNote()) openAddNote();
     else if (k === 'o' && can('editor')) {
       const n = activeNotes().notes.filter((x) => x.frame < S.frame).pop();
       if (n) saveOut(n, S.frame, n.end); else toast('Play past a note, then press O to set where it ends.');
@@ -2966,7 +2984,7 @@
       if (!n) { toast('Go to a note first (N / P), then press A, D or W.'); return; }
       changeStatus(n, { a: 'addressed', d: 'discuss', w: 'wont_do' }[k]);
     }
-    else if (k === 'r' && can('reviewer')) {
+    else if (k === 'r' && canNote()) {
       const ta = $('nowCard').querySelector('.actions textarea');
       if (ta) { e.preventDefault(); ta.focus(); }
     }

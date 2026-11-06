@@ -889,3 +889,10 @@ body[data-view=playback] .screen-notes {
 .dlg-title h2 { margin-right: auto; }
 #filmSelect option:disabled, #versionSelect option:disabled { color: var(--muted); }
 body.guest #tally { margin-left: auto; }
+
+/* Film and version pickers carry a small label above them. */
+.pick { display: grid; gap: 2px; }
+.pick-lbl { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); line-height: 1; padding-left: 2px; }
+.top { align-items: end; }
+.top > .brand, .top > .views, .top > #shareBtn, .top > .tally, .top > .who { align-self: center; }
+@media (max-width: 600px) { .pick { min-width: 0; } .pick-lbl { font-size: 9.5px; } }

@@ -270,8 +270,9 @@ if (isset($_GET['share'])) {
     if (share_guest_name($share) === null || isset($_GET['rename'])) {
         $what = SHARE_VIEWS[$share['view']] ?? 'Review';
         gate_page($share['film_name'] . ' · ' . $cfg['app_name'], $share['film_name'] . ' · ' . $share['version_label'],
-            'You’ve been sent this cut to ' . ((int)$share['can_comment'] ? 'watch and leave notes on' : 'watch with the team’s notes') . '. '
-            . ((int)$share['can_comment'] ? 'What’s your name? It goes on every note and reply you add, so the team knows who wrote it.' : 'What’s your name?'),
+            'You’ve been sent this cut to ' . ((int)$share['can_comment'] ? 'watch and leave notes on' : 'watch with the team’s notes')
+            . ((int)$share['can_script'] ? ', and to suggest changes to the script' : '') . '. '
+            . ((int)$share['can_comment'] || (int)$share['can_script'] ? 'What’s your name? It goes on everything you add, so the team knows who wrote it.' : 'What’s your name?'),
             $error, function () use ($share) { ?>
   <form method="post" autocomplete="off">
     <?php csrf_field(); ?>
@@ -316,14 +317,14 @@ if (!$share && !current_account()) {
 $me = $share ? guest_account($share, share_guest_name($share)) : current_account();
 page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg['app_name']); ?>
 <body class="app<?= $share ? ' guest' : '' ?>" data-csrf="<?= h($_SESSION['csrf']) ?>" data-role="<?= h($me['role']) ?>" data-uid="<?= (int)$me['id'] ?>"<?php if ($share): ?>
-  data-share="<?= h($share['token']) ?>" data-share-view="<?= h($share['view']) ?>"<?php endif; ?>>
+  data-share="<?= h($share['token']) ?>" data-share-view="<?= h($share['view']) ?>"<?= (int)$share['can_comment'] ? ' data-share-comment=""' : '' ?><?= (int)$share['can_script'] ? ' data-share-script=""' : '' ?><?php endif; ?>>
 <a class="skip" href="#notes">Skip to the notes list</a>
 <header class="top">
   <h1 class="sr-only"><?= h($cfg['app_name']) ?></h1>
   <a class="brand" href="./" title="<?= h($cfg['app_name']) ?>"><?= brand_mark(28) ?><span><?= h($cfg['app_name']) ?></span></a>
   <div class="pickers">
-    <select id="filmSelect" aria-label="Film"></select>
-    <span class="ver-pick"><span class="ver-swatch" id="verSwatch" aria-hidden="true"></span><select id="versionSelect" aria-label="Version"></select></span>
+    <label class="pick"><span class="pick-lbl">Film</span><select id="filmSelect"></select></label>
+    <label class="pick"><span class="pick-lbl">Version</span><span class="ver-pick"><span class="ver-swatch" id="verSwatch" aria-hidden="true"></span><select id="versionSelect"></select></span></label>
   </div>
   <div class="views" id="views" role="group" aria-label="View"<?= $share ? ' hidden' : '' ?>>
     <button type="button" data-view="review" title="Review: work through the notes (1)">Review</button>
@@ -338,7 +339,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
   <details class="who" id="whoMenu">
     <summary title="You" data-initial="<?= h(mb_strtoupper(mb_substr($me['name'], 0, 1))) ?>"><span class="me-name"><?= h($me['name']) ?></span> <span class="role-tag">Guest</span></summary>
     <div class="menu-pop" role="menu">
-      <p class="menu-note">You’re a guest on <?= h($share['film_name'] . ' · ' . $share['version_label']) ?>. <?= (int)$share['can_comment'] ? 'Your notes and replies show your name.' : 'You can watch and read the notes.' ?></p>
+      <p class="menu-note">You’re a guest on <?= h($share['film_name'] . ' · ' . $share['version_label']) ?>. <?= (int)$share['can_comment'] ? 'Your notes and replies show your name.' : 'You can watch and read the notes.' ?><?= (int)$share['can_script'] ? ' Script wording you suggest is saved as a draft for the team.' : '' ?></p>
       <a role="menuitem" href="?share=<?= h($share['token']) ?>&amp;rename=1">Change your name</a>
       <button type="button" role="menuitem" id="helpBtn">Help and shortcuts <kbd>?</kbd></button>
     </div>

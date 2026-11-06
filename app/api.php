@@ -126,6 +126,9 @@ if ($share) {
     if (!in_array("$method $action", GUEST_ACTIONS, true)) {
         fail('That isn’t available from a share link.', 403);
     }
+    if (!share_allows($share, $action)) {
+        fail($action === 'script.edit' ? 'This link doesn’t let you suggest script changes.' : 'This link is for watching; it doesn’t let you add notes.', 403);
+    }
     $sv = (int)$share['version_id'];
     $gone = 'That isn’t part of what was shared with you.';
     if ((isset($in['version_id']) && (int)$in['version_id'] !== $sv) || (isset($in['film_id']) && (int)$in['film_id'] !== (int)$share['film_id'])) {
@@ -302,7 +305,7 @@ switch ("$method $action") {
             unset($vv);
         }
         json_out(['user' => $user, 'me' => user_public($me), 'films' => $films, 'versions' => $versions, 'statuses' => STATUSES,
-            'guest' => $share ? ['name' => $user, 'view' => $share['view'], 'can_comment' => (bool)$share['can_comment']] : null,
+            'guest' => $share ? ['name' => $user, 'view' => $share['view'], 'can_comment' => (bool)$share['can_comment'], 'can_script' => (bool)$share['can_script']] : null,
             'connections' => ['frameio' => fio_configured() && !empty(conn_reload()['fio_account_id']), 'elevenlabs' => !$share && el_configured(),
                 'mail' => !$share && mail_configured() ? conn_reload()['smtp_from'] : null]]);
 
@@ -326,8 +329,8 @@ switch ("$method $action") {
         $view = isset(SHARE_VIEWS[$in['view'] ?? '']) ? $in['view'] : 'review';
         $days = (int)($in['days'] ?? 0);
         $token = bin2hex(random_bytes(20));
-        $pdo->prepare('INSERT INTO shares (token, film_id, version_id, view, can_comment, label, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
-            ->execute([$token, $v['film_id'], $vid, $view, !empty($in['can_comment']) ? 1 : 0, mb_substr(trim((string)($in['label'] ?? '')), 0, 80),
+        $pdo->prepare('INSERT INTO shares (token, film_id, version_id, view, can_comment, can_script, label, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$token, $v['film_id'], $vid, $view, !empty($in['can_comment']) ? 1 : 0, !empty($in['can_script']) ? 1 : 0, mb_substr(trim((string)($in['label'] ?? '')), 0, 80),
                 $user, now_iso(), $days > 0 ? time() + min($days, 365) * 86400 : null]);
         $st = $pdo->prepare('SELECT * FROM shares WHERE id = ?');
         $st->execute([(int)$pdo->lastInsertId()]);
@@ -1026,8 +1029,8 @@ switch ("$method $action") {
                 fail('Reviewers can suggest new wording as a draft. Approving, cutting or changing an approved line is for editors.', 403);
             }
         }
-        $pdo->prepare('INSERT INTO script_edits (version_id, transcript_id, seg_idx, seg_norm, slot, state, text, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)')
-            ->execute([$vid, $tid, $i, $segs[$i]['norm'], $slot, $state, $text, $user, now_iso()]);
+        $pdo->prepare('INSERT INTO script_edits (version_id, transcript_id, seg_idx, seg_norm, slot, state, text, by_name, at, share_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$vid, $tid, $i, $segs[$i]['norm'], $slot, $state, $text, $user, now_iso(), $share ? (int)$share['id'] : null]);
         $lines = script_recorded($vid, script_lines($vid, $tid, $segs));
         json_out(['ok' => true, 'line' => $lines[$i . ':' . $slot] ?? null, 'lines' => array_values($lines)]);
 
