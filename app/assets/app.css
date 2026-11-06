@@ -896,3 +896,15 @@ body.guest #tally { margin-left: auto; }
 .top { align-items: end; }
 .top > .brand, .top > .views, .top > #shareBtn, .top > .tally, .top > .who { align-self: center; }
 @media (max-width: 600px) { .pick { min-width: 0; } .pick-lbl { font-size: 9.5px; } }
+
+/* Crossing out transcript lines */
+.seg-main { position: relative; }
+.seg-x { position: absolute; top: -2px; right: 0; width: 24px; height: 24px; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1;
+  cursor: pointer; opacity: 0; transition: opacity .12s; }
+.tline:hover .seg-x, .tline:focus-within .seg-x, .tline:focus .seg-x, .seg-main.crossed .seg-x { opacity: 1; }
+.seg-x:hover { color: var(--danger); border-color: var(--danger); }
+.seg-main.crossed .seg-x:hover { color: var(--text); border-color: var(--text); }
+.seg-main:has(.seg-x) .seg-text, .seg-main:has(.seg-x) .seg-speaker { margin-right: 30px; }
+.seg-main.crossed .seg-speaker { color: var(--faint); text-decoration: line-through; }
+@media (hover: none) { .seg-x { opacity: 1; } }

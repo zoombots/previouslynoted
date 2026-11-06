@@ -243,7 +243,8 @@ Open the **Transcript** tab and press **Script view**. The sidebar widens; the v
 
 - **Now in this cut:** the transcript line. Click it to jump there.
 - **Notes:** the notes on that line. Type in **+ Note on this line** to add one (it goes on the narration track); it's a normal note with replies and statuses.
-- **New script:** **Rewrite** a line (saved as a *Draft*), **Approve** it when it's final, **Cut** it, or add **+ Line after**. Every change is kept under **History**, with who and when, and any earlier wording can be brought back. Ctrl+Enter saves a draft; Ctrl+Shift+Enter saves it approved.
+- **New script:** **Rewrite** a line (saved as a *Draft*), **Approve** it when it's final, **Cross out** it, or add **+ Line after**. **Delete line** removes a line you added (draft or approved). Every change is kept under **History**, with who and when, and any earlier wording can be brought back. Ctrl+Enter saves a draft; Ctrl+Shift+Enter saves it approved.
+- **Crossing out from the transcript (editors and admins):** hover a line in the Transcript tab and press **✕** (or click the line and press **X** or **Delete**) to cross it out of the new script; **↺** (or X again) brings it back, and the message that appears has Undo. Crossed-out lines stay in the list struck through; untick **Show crossed-out lines** to hide them. Reviewers, and guests whose share link allows script changes, can take back their own draft suggestions (**Withdraw**, or **Delete line** for a line they added).
 - **Download:** the *recording script* lists only what to record, cut or add, with timecodes, for the VO session; the *full script* is a CSV of every line.
 - **Recorded:** when the next cut (carried from this one) has a transcript, lines whose new wording appears in it are marked **Recorded in …**.
 

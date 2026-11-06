@@ -479,6 +479,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
         <div class="filter-row checks">
           <label class="follow"><input type="checkbox" id="scriptFollow" checked> Follow playback</label>
           <label class="follow" id="scriptChangesWrap"><input type="checkbox" id="scriptChanges" checked> <span id="scriptChangesLabel">Show changes</span></label>
+          <label class="follow" id="scriptCutWrap" hidden><input type="checkbox" id="scriptShowCut" checked> <span id="scriptCutLabel">Show crossed-out lines</span></label>
         </div>
         <p class="script-note" id="scriptNote" hidden></p>
       </div>

@@ -1024,9 +1024,12 @@ switch ("$method $action") {
         }
         $slot = (int)$slot;
         if (!role_at_least($me, 'editor')) {
-            $cur = script_lines($vid, $tid, $segs)[$i . ':' . $slot]['state'] ?? 'same';
-            if ($state !== 'draft' || in_array($cur, ['approved', 'cut'], true)) {
-                fail('Reviewers can suggest new wording as a draft. Approving, cutting or changing an approved line is for editors.', 403);
+            $curLine = script_lines($vid, $tid, $segs)[$i . ':' . $slot] ?? null;
+            $cur = $curLine['state'] ?? 'same';
+            // Reviewers suggest drafts, and can take back a draft of their own (back to the original, or delete an added line).
+            $withdraw = $cur === 'draft' && ($curLine['by'] ?? '') === $user && ($state === ($slot > 0 ? 'removed' : 'same'));
+            if (!$withdraw && ($state !== 'draft' || in_array($cur, ['approved', 'cut'], true))) {
+                fail('Reviewers can suggest new wording as a draft, and take back their own drafts. Approving, crossing out or changing an approved line is for editors.', 403);
             }
         }
         $pdo->prepare('INSERT INTO script_edits (version_id, transcript_id, seg_idx, seg_norm, slot, state, text, by_name, at, share_id) VALUES (?,?,?,?,?,?,?,?,?,?)')

@@ -1691,6 +1691,10 @@
     }
 
     const q = $('scriptSearch').value.trim().toLowerCase();
+    const nCut = [...S.scriptEdits.lines.values()].filter((l) => l.slot === 0 && l.state === 'cut').length;
+    $('scriptCutWrap').hidden = !nCut;
+    $('scriptCutLabel').textContent = `Show crossed-out lines (${nCut})`;
+    const showCut = !nCut || $('scriptShowCut').checked;
     const showChanges = changes && $('scriptChanges').checked;
     const ol = $('script');
     const wide = S.scriptWide && sc.segments.length && sc.activeId === sc.latestId && S.scriptEdits.transcriptId;
@@ -1709,14 +1713,23 @@
     sc.segments.forEach((g, i) => {
       const extra = wide ? [...S.scriptEdits.lines.values()].filter((l) => l.i === i && l.slot > 0 && l.state !== 'removed').sort((a, b) => a.slot - b.slot) : [];
       const own = S.scriptEdits.lines.get(`${i}:0`);
+      const crossed = own?.state === 'cut';
+      if (crossed && !showCut) return;
       if (q && !(g.text + ' ' + g.speaker + ' ' + (own?.text || '') + extra.map((x) => x.text).join(' ')).toLowerCase().includes(q)) return;
       const ch = showChanges && g.change && g.change !== 'same' ? g.change : '';
       const notesBox = el('div', { class: 'seg-notes', 'data-i': i });
       rows.push(el('li', { class: 'tline' + (wide ? ' wide' : '') + (ch ? ' ch-' + ch + ' revised' : ''), 'data-i': i, tabindex: '0',
         onclick: (e) => { if (!e.target.closest('.nchip, details, .cell-new, .cell-notes, button, textarea, input')) seekFrame(g.start); },
-        onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) seekFrame(g.start); } },
+        onkeydown: (e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter') seekFrame(g.start);
+          else if ((e.key === 'x' || e.key === 'Delete' || e.key === 'Backspace') && canCross()) { e.preventDefault(); e.stopPropagation(); toggleCross(i); }
+        } },
         el('span', { class: 'seg-tc', text: tc(g.start) }),
-        el('div', { class: 'seg-main' },
+        el('div', { class: 'seg-main' + (crossed ? ' crossed' : '') },
+          canCross() ? el('button', { type: 'button', class: 'seg-x', 'aria-label': crossed ? 'Restore this line' : 'Cross out this line',
+            title: crossed ? 'Restore this line' : 'Cross out this line (X or Delete)', text: crossed ? '↺' : '✕',
+            onclick: (e) => { e.stopPropagation(); toggleCross(i); } }) : null,
           g.speaker ? el('button', { type: 'button', class: 'seg-speaker', text: g.speaker, title: can('editor') ? 'Rename this speaker throughout' : g.speaker, onclick: (e) => { e.stopPropagation(); if (can('editor')) renameSpeaker(g.speaker); } }) : null,
           el('p', { class: 'seg-text' + (own?.state === 'cut' ? ' struck' : ''), text: g.text }),
           ch === 'new' ? el('span', { class: 'seg-change', text: 'new line' }) : null,
@@ -1743,20 +1756,32 @@
     ol.querySelector('.cell-new textarea')?.focus();
   }
 
-  const LINE_LABEL = { same: '', draft: 'Draft', approved: 'Approved', cut: 'Cut', removed: 'Removed' };
+  const LINE_LABEL = { same: '', draft: 'Draft', approved: 'Approved', cut: 'Crossed out', removed: 'Deleted' };
+  // Save a line's state in the new script: same, draft, approved, cut (crossed out) or removed (an added line deleted).
+  async function saveLine(i, slot, st, text, undoMsg) {
+    try {
+      const before = S.scriptEdits.lines.get(`${i}:${slot}`);
+      const r = await api('script.edit', { body: { version_id: S.versionId, transcript_id: S.scriptEdits.transcriptId, seg_idx: i, slot, state: st, text: text ?? '' } });
+      setScriptLines(S.scriptEdits.transcriptId, r.lines);
+      S.editingLine = null;
+      renderScript();
+      if (undoMsg) toast(undoMsg, { label: 'Undo', run: () => saveLine(i, slot, before?.state || 'same', before?.text || '') });
+    } catch (e) { fail(e); }
+  }
+  // Editors cross out a line of the transcript (and bring it back) right from the list.
+  const canCross = () => can('editor') && !SHARE && !!S.scriptEdits.transcriptId && S.script.activeId === S.script.latestId;
+  function toggleCross(i) {
+    if (!canCross()) return;
+    const own = S.scriptEdits.lines.get(`${i}:0`);
+    if (own?.state === 'cut') saveLine(i, 0, 'same', '', 'Line restored.');
+    else saveLine(i, 0, 'cut', '', 'Line crossed out.');
+  }
   function newCell(i, slot, g) {
     const key = `${i}:${slot}`;
     const L = slot === 'new' ? null : S.scriptEdits.lines.get(key);
     const state = L?.state || 'same';
     const cell = el('div', { class: `cell-new st-${state}` });
-    const save = async (st, text) => {
-      try {
-        const r = await api('script.edit', { body: { version_id: S.versionId, transcript_id: S.scriptEdits.transcriptId, seg_idx: i, slot, state: st, text: text ?? '' } });
-        setScriptLines(S.scriptEdits.transcriptId, r.lines);
-        S.editingLine = null;
-        renderScript();
-      } catch (e) { fail(e); }
-    };
+    const save = (st, text, msg) => saveLine(i, slot, st, text, msg);
     if (S.editingLine === key) {
       const ta = el('textarea', { rows: 3, placeholder: slot ? 'Write the new line' : 'Rewrite this line',
         onkeydown: (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(e.shiftKey && can('editor') ? 'approved' : 'draft', ta.value); } if (e.key === 'Escape') { S.editingLine = null; renderScript(); } } });
@@ -1769,7 +1794,7 @@
     }
     const edit = (k = key) => { S.editingLine = k; renderScript(); };
     if (state === 'same') cell.append(el('span', { class: 'same', text: 'Same as now' }));
-    else if (state === 'cut') cell.append(el('p', { class: 'new-text', text: 'Cut this line' }));
+    else if (state === 'cut') cell.append(el('p', { class: 'new-text', text: 'Crossed out: not in the new script' }));
     else cell.append(el('p', { class: 'new-text', text: L.text }));
     if (L && state !== 'same') {
       cell.append(el('div', { class: 'line-meta' },
@@ -1783,13 +1808,14 @@
       if (canScript()) {
         if (state === 'same') acts.push(B('Suggest a rewrite', () => edit()));
         if (state === 'draft') acts.push(B('Edit draft', () => edit()));
+        if (state === 'draft' && L.by === S.user) acts.push(B(slot ? 'Delete line' : 'Withdraw', () => save(slot ? 'removed' : 'same', '', slot ? 'Line deleted.' : 'Suggestion withdrawn.')));
         if (slot === 0 && state !== 'cut') acts.push(B('+ Line after', () => edit(`${i}:new`)));
       }
     } else {
-    if (state === 'same') acts.push(B('Rewrite', () => edit()), B('Cut', () => save('cut', '')));
-    if (state === 'draft') acts.push(B('Edit', () => edit()), B('Approve', () => save('approved', L.text), 'btn'), slot ? B('Remove', () => save('removed', '')) : B('Back to original', () => save('same', '')));
-    if (state === 'approved') acts.push(B('Edit', () => edit()), B('Unapprove', () => save('draft', L.text)));
-    if (state === 'cut') acts.push(B('Restore', () => save('same', '')));
+    if (state === 'same') acts.push(B('Rewrite', () => edit()), B('Cross out', () => save('cut', '', 'Line crossed out.')));
+    if (state === 'draft') acts.push(B('Edit', () => edit()), B('Approve', () => save('approved', L.text), 'btn'), slot ? B('Delete line', () => save('removed', '', 'Line deleted.')) : B('Back to original', () => save('same', '')));
+    if (state === 'approved') acts.push(B('Edit', () => edit()), B('Unapprove', () => save('draft', L.text)), slot ? B('Delete line', () => save('removed', '', 'Line deleted.')) : B('Cross out', () => save('cut', '', 'Line crossed out.')));
+    if (state === 'cut') acts.push(B('Restore', () => save('same', '', 'Line restored.')));
     if (slot === 0 && state !== 'cut') acts.push(B('+ Line after', () => edit(`${i}:new`)));
     }
     if (acts.length) cell.append(el('div', { class: 'line-actions' }, ...acts));
@@ -2833,7 +2859,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
-          can('editor') ? 'Rewrite, cut or add lines; approve them when final. Download the recording script for the VO session.' : null)),
+          can('editor') ? 'Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download the recording script for the VO session.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
           'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can suggest script changes (as drafts you approve). Their notes carry a guest chip.',
@@ -2924,6 +2950,7 @@
     try { await uploadScript(S.versionId, f); } catch (err) { fail(err); }
   });
   $('scriptSearch').addEventListener('input', renderScript);
+  $('scriptShowCut').addEventListener('change', renderScript);
   S.scriptWide = ls.get('scriptWide') === '1';
   $('scriptWideBtn').addEventListener('click', () => {
     S.scriptWide = !S.scriptWide;
