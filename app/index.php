@@ -246,8 +246,44 @@ if (user_count() === 0) {
 <?php });
 }
 
+/* ---------- Share links: someone outside the team ---------- */
+$share = null;
+if (isset($_GET['share'])) {
+    $share = share_by_token((string)$_GET['share']);
+    if (!$share) {
+        gate_page('Link expired · ' . $cfg['app_name'], 'This link doesn’t work any more',
+            'It may have been turned off, or it expired. Ask whoever sent it for a new one.', '', function () {});
+    }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $name = clean_guest_name(post('name'));
+        if (!csrf_ok()) {
+            $error = 'The form expired. Try again.';
+        } elseif ($name === '') {
+            $error = 'Enter your name, so the team knows who wrote your notes.';
+        } else {
+            share_set_guest_name($share, $name);
+            setcookie('prevnoted_guest', $name, ['expires' => time() + 31536000, 'path' => '/', 'samesite' => 'Lax', 'secure' => is_https(), 'httponly' => true]);
+            header('Location: ?share=' . $share['token']);
+            exit;
+        }
+    }
+    if (share_guest_name($share) === null || isset($_GET['rename'])) {
+        $what = SHARE_VIEWS[$share['view']] ?? 'Review';
+        gate_page($share['film_name'] . ' · ' . $cfg['app_name'], $share['film_name'] . ' · ' . $share['version_label'],
+            'You’ve been sent this cut to ' . ((int)$share['can_comment'] ? 'watch and leave notes on' : 'watch with the team’s notes') . '. '
+            . ((int)$share['can_comment'] ? 'What’s your name? It goes on every note and reply you add, so the team knows who wrote it.' : 'What’s your name?'),
+            $error, function () use ($share) { ?>
+  <form method="post" autocomplete="off">
+    <?php csrf_field(); ?>
+    <label>Your name<input name="name" required maxlength="60" autofocus value="<?= h($_POST['name'] ?? share_guest_name($share) ?? $_COOKIE['prevnoted_guest'] ?? '') ?>" autocomplete="name"></label>
+    <button class="btn primary">Open the cut</button>
+  </form>
+<?php }, 'No account needed. The link works only for this cut.');
+    }
+}
+
 /* ---------- Sign in ---------- */
-if (!current_account()) {
+if (!$share && !current_account()) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         slow_down();
         if (!csrf_ok()) {
@@ -277,9 +313,10 @@ if (!current_account()) {
 }
 
 /* ---------- The app ---------- */
-$me = current_account();
-page_head($cfg['app_name']); ?>
-<body class="app" data-csrf="<?= h($_SESSION['csrf']) ?>" data-role="<?= h($me['role']) ?>" data-uid="<?= (int)$me['id'] ?>">
+$me = $share ? guest_account($share, share_guest_name($share)) : current_account();
+page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg['app_name']); ?>
+<body class="app<?= $share ? ' guest' : '' ?>" data-csrf="<?= h($_SESSION['csrf']) ?>" data-role="<?= h($me['role']) ?>" data-uid="<?= (int)$me['id'] ?>"<?php if ($share): ?>
+  data-share="<?= h($share['token']) ?>" data-share-view="<?= h($share['view']) ?>"<?php endif; ?>>
 <a class="skip" href="#notes">Skip to the notes list</a>
 <header class="top">
   <h1 class="sr-only"><?= h($cfg['app_name']) ?></h1>
@@ -287,22 +324,26 @@ page_head($cfg['app_name']); ?>
   <div class="pickers">
     <select id="filmSelect" aria-label="Film"></select>
     <span class="ver-pick"><span class="ver-swatch" id="verSwatch" aria-hidden="true"></span><select id="versionSelect" aria-label="Version"></select></span>
-    <details class="pop" id="manageMenu">
-      <summary class="btn ghost" title="Films, versions, tracks and Frame.io">Manage</summary>
-      <div class="menu-pop" role="menu">
-        <button type="button" role="menuitem" id="syncBtn" hidden>Sync comments from Frame.io</button>
-        <p class="menu-note" id="syncNote" hidden></p>
-        <button type="button" role="menuitem" id="manageBtn">Films &amp; versions…</button>
-        <button type="button" role="menuitem" id="tracksBtn">Tracks…</button>
-      </div>
-    </details>
   </div>
-  <div class="views" id="views" role="group" aria-label="View">
+  <div class="views" id="views" role="group" aria-label="View"<?= $share ? ' hidden' : '' ?>>
     <button type="button" data-view="review" title="Review: work through the notes (1)">Review</button>
     <button type="button" data-view="script" title="Script: transcript, notes and new wording side by side (2)">Script</button>
     <button type="button" data-view="playback" title="Playback: big picture with the notes shown as they come up (3)">Playback</button>
   </div>
+  <?php if (!$share && role_at_least($me, 'editor')): ?>
+  <button type="button" class="btn ghost" id="shareBtn" title="Send this cut to someone outside the team">Share</button>
+  <?php endif; ?>
   <div class="tally" id="tally" role="group" aria-label="Show notes by status"></div>
+  <?php if ($share): ?>
+  <details class="who" id="whoMenu">
+    <summary title="You" data-initial="<?= h(mb_strtoupper(mb_substr($me['name'], 0, 1))) ?>"><span class="me-name"><?= h($me['name']) ?></span> <span class="role-tag">Guest</span></summary>
+    <div class="menu-pop" role="menu">
+      <p class="menu-note">You’re a guest on <?= h($share['film_name'] . ' · ' . $share['version_label']) ?>. <?= (int)$share['can_comment'] ? 'Your notes and replies show your name.' : 'You can watch and read the notes.' ?></p>
+      <a role="menuitem" href="?share=<?= h($share['token']) ?>&amp;rename=1">Change your name</a>
+      <button type="button" role="menuitem" id="helpBtn">Help and shortcuts <kbd>?</kbd></button>
+    </div>
+  </details>
+  <?php else: ?>
   <details class="who" id="whoMenu">
     <summary title="Your account" data-initial="<?= h(mb_strtoupper(mb_substr($me['name'], 0, 1))) ?>"><span class="me-name"><?= h($me['name']) ?></span> <span class="role-tag"><?= h(ROLE_LABELS[$me['role']]) ?></span></summary>
     <div class="menu-pop" role="menu">
@@ -315,6 +356,7 @@ page_head($cfg['app_name']); ?>
       <a role="menuitem" href="?signout=1">Sign out</a>
     </div>
   </details>
+  <?php endif; ?>
 </header>
 
 <main class="workspace" id="workspace">
@@ -360,6 +402,7 @@ page_head($cfg['app_name']); ?>
             </select></label>
         </div>
       </details>
+      <button class="btn ghost" id="tracksBtn" type="button" title="Add, rename, recolour and reorder tracks"><span class="lbl">Tracks…</span></button>
       <button class="btn" id="addBtn" type="button" title="Add a note at the playhead (M)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 6v12M6 12h12"/></svg><span class="lbl">Add note here</span></button>
     </div>
 

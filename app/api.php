@@ -23,7 +23,18 @@ if (!app_config()) {
     fail('Setup has not been completed.', 503);
 }
 start_session();
-$me = current_account();
+// Someone outside the team on a share link (lib/share.php): they act as a reviewer (or viewer) under the name they gave.
+$share = null;
+if (isset($_GET['share'])) {
+    $share = share_by_token((string)$_GET['share']);
+    $guestName = $share ? share_guest_name($share) : null;
+    if (!$share || $guestName === null) {
+        fail('This share link doesn’t work any more, or your name is needed. Reload the page.', 401);
+    }
+    $me = guest_account($share, $guestName);
+} else {
+    $me = current_account();
+}
 if (!$me) {
     fail('Your session has ended. Sign in again.', 401);
 }
@@ -107,6 +118,32 @@ function send_account_link(array $person, string $kind, string $link, string $ex
     } catch (MailError $e) {
         error_log('[previouslynoted] mail: ' . $e->getMessage());
         return [false, $e->getMessage()];
+    }
+}
+
+if ($share) {
+    // A guest sees only the shared version: every id in the request must be inside it.
+    if (!in_array("$method $action", GUEST_ACTIONS, true)) {
+        fail('That isn’t available from a share link.', 403);
+    }
+    $sv = (int)$share['version_id'];
+    $gone = 'That isn’t part of what was shared with you.';
+    if ((isset($in['version_id']) && (int)$in['version_id'] !== $sv) || (isset($in['film_id']) && (int)$in['film_id'] !== (int)$share['film_id'])) {
+        fail($gone, 404);
+    }
+    if (isset($in['note_id'])) {
+        $chk = db()->prepare('SELECT 1 FROM positions WHERE note_id = ? AND version_id = ?');
+        $chk->execute([(int)$in['note_id'], $sv]);
+        if (!$chk->fetchColumn()) {
+            fail($gone, 404);
+        }
+    }
+    if (isset($in['transcript_id']) && $in['transcript_id'] !== '') {
+        $chk = db()->prepare('SELECT 1 FROM transcripts WHERE id = ? AND version_id = ?');
+        $chk->execute([(int)$in['transcript_id'], $sv]);
+        if (!$chk->fetchColumn()) {
+            fail($gone, 404);
+        }
     }
 }
 
@@ -228,13 +265,14 @@ switch ("$method $action") {
         json_out(['ok' => true]);
 
     case 'GET state':
-        $films = $pdo->query('SELECT id, name FROM films ORDER BY id')->fetchAll();
+        // A guest gets only the shared film and version.
+        $only = $share ? ' WHERE v.id = ' . (int)$share['version_id'] : '';
         $versions = $pdo->query(
             'SELECT v.id, v.film_id, v.label, v.color, v.tc_base, v.tc_start, v.rate, v.frameio_url, v.video_url, v.carried_from,
                     v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id,
                     (SELECT COUNT(*) FROM positions p WHERE p.version_id = v.id) AS note_count,
                     (SELECT COUNT(*) FROM transcripts t WHERE t.version_id = v.id) AS transcript_count
-             FROM versions v ORDER BY v.film_id, v.id'
+             FROM versions v' . $only . ' ORDER BY v.film_id, v.id'
         )->fetchAll();
         $fps = [];
         foreach ($pdo->query('SELECT version_id, created_at, source FROM fingerprints') as $f) {
@@ -247,14 +285,57 @@ switch ("$method $action") {
                 'start_tc' => frames_to_tc((int)$e['start_frame'], max(1, (int)round((float)$e['rate']))), 'uploaded_at' => $e['uploaded_at']] : null;
         }
         unset($vv);
-        $films = $pdo->query('SELECT id, name, keyterms FROM films ORDER BY id')->fetchAll();
+        $films = $pdo->query('SELECT id, name, keyterms FROM films' . ($share ? ' WHERE id = ' . (int)$share['film_id'] : '') . ' ORDER BY id')->fetchAll();
         foreach ($films as &$fm) {
             $fm['categories'] = film_categories((int)$fm['id']);
         }
         unset($fm);
+        if ($share) {
+            foreach ($films as &$fm) {
+                $fm['keyterms'] = null;
+            }
+            unset($fm);
+            foreach ($versions as &$vv) {
+                $vv['fingerprint'] = null;
+                $vv['frameio_url'] = null;
+            }
+            unset($vv);
+        }
         json_out(['user' => $user, 'me' => user_public($me), 'films' => $films, 'versions' => $versions, 'statuses' => STATUSES,
-            'connections' => ['frameio' => fio_configured() && !empty(conn_reload()['fio_account_id']), 'elevenlabs' => el_configured(),
-                'mail' => mail_configured() ? conn_reload()['smtp_from'] : null]]);
+            'guest' => $share ? ['name' => $user, 'view' => $share['view'], 'can_comment' => (bool)$share['can_comment']] : null,
+            'connections' => ['frameio' => fio_configured() && !empty(conn_reload()['fio_account_id']), 'elevenlabs' => !$share && el_configured(),
+                'mail' => !$share && mail_configured() ? conn_reload()['smtp_from'] : null]]);
+
+    /* ---------- share links for people outside the team (editors) ---------- */
+    case 'GET shares':
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        $st = $pdo->prepare('SELECT * FROM shares WHERE version_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) ORDER BY id DESC');
+        $st->execute([$vid, time()]);
+        $guests = $pdo->prepare('SELECT DISTINCT author FROM notes WHERE share_id = ? UNION SELECT DISTINCT author FROM replies WHERE share_id = ?');
+        $list = [];
+        foreach ($st->fetchAll() as $row) {
+            $guests->execute([$row['id'], $row['id']]);
+            $list[] = share_public($row) + ['guests' => $guests->fetchAll(PDO::FETCH_COLUMN)];
+        }
+        json_out(['shares' => $list, 'views' => SHARE_VIEWS]);
+
+    case 'POST share.create':
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        $view = isset(SHARE_VIEWS[$in['view'] ?? '']) ? $in['view'] : 'review';
+        $days = (int)($in['days'] ?? 0);
+        $token = bin2hex(random_bytes(20));
+        $pdo->prepare('INSERT INTO shares (token, film_id, version_id, view, can_comment, label, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)')
+            ->execute([$token, $v['film_id'], $vid, $view, !empty($in['can_comment']) ? 1 : 0, mb_substr(trim((string)($in['label'] ?? '')), 0, 80),
+                $user, now_iso(), $days > 0 ? time() + min($days, 365) * 86400 : null]);
+        $st = $pdo->prepare('SELECT * FROM shares WHERE id = ?');
+        $st->execute([(int)$pdo->lastInsertId()]);
+        json_out(['ok' => true, 'share' => share_public($st->fetch()) + ['guests' => []]]);
+
+    case 'POST share.revoke':
+        $pdo->prepare('UPDATE shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')->execute([now_iso(), int_in($in, 'id')]);
+        json_out(['ok' => true]);
 
     case 'POST film.create':
         $name = str_in($in, 'name', 200);
@@ -388,7 +469,7 @@ switch ("$method $action") {
         $vid = int_in($in, 'version_id');
         $version = version_row($vid);
         $st = $pdo->prepare(
-            'SELECT n.id, n.author, n.tag, n.text, n.created_at, n.fio_comment_id, n.origin_version_id,
+            'SELECT n.id, n.author, n.tag, n.text, n.created_at, n.fio_comment_id, n.origin_version_id, n.share_id,
                     ov.label AS origin_label, p.frame, p.end_frame, p.confirmed, p.method, p.reason
              FROM positions p
              JOIN notes n ON n.id = p.note_id
@@ -413,7 +494,7 @@ switch ("$method $action") {
                 $edits[$x['note_id']][] = $x;
             }
             foreach ($pdo->query(
-                "SELECT r.note_id, r.author, r.text, r.created_at, r.source, v.label AS version_label
+                "SELECT r.note_id, r.author, r.text, r.created_at, r.source, r.share_id, v.label AS version_label
                  FROM replies r LEFT JOIN versions v ON v.id = r.version_id
                  WHERE r.note_id IN ($in_) ORDER BY r.created_at, r.id"
             ) as $r) {
@@ -471,8 +552,8 @@ switch ("$method $action") {
             $tag = clean_tag((string)$in['tag'], $keys);
         }
         $pdo->beginTransaction();
-        $pdo->prepare('INSERT INTO notes (film_id, origin_version_id, author, tag, text, created_at) VALUES (?,?,?,?,?,?)')
-            ->execute([(int)$version['film_id'], $vid, $user, $tag, $text, now_iso()]);
+        $pdo->prepare('INSERT INTO notes (film_id, origin_version_id, author, tag, text, created_at, share_id) VALUES (?,?,?,?,?,?,?)')
+            ->execute([(int)$version['film_id'], $vid, $user, $tag, $text, now_iso(), $share ? (int)$share['id'] : null]);
         $nid = (int)$pdo->lastInsertId();
         $pdo->prepare("INSERT INTO positions (note_id, version_id, frame, confirmed, method) VALUES (?,?,?,1,'manual')")->execute([$nid, $vid, $frame]);
         add_event($nid, $vid, 'open', null, $user);
@@ -490,8 +571,8 @@ switch ("$method $action") {
         $nid = int_in($in, 'note_id');
         note_row($nid);
         $vid = int_in($in, 'version_id');
-        $pdo->prepare("INSERT INTO replies (note_id, version_id, author, text, created_at, source) VALUES (?,?,?,?,?,'app')")
-            ->execute([$nid, $vid, $user, str_in($in, 'text', 5000), now_iso()]);
+        $pdo->prepare("INSERT INTO replies (note_id, version_id, author, text, created_at, source, share_id) VALUES (?,?,?,?,?,'app',?)")
+            ->execute([$nid, $vid, $user, str_in($in, 'text', 5000), now_iso(), $share ? (int)$share['id'] : null]);
         json_out(['ok' => true]);
 
     case 'POST note.tag':
@@ -641,6 +722,9 @@ switch ("$method $action") {
         // Reword a note. Editors and admins can reword any note; reviewers only their own.
         $nid = int_in($in, 'note_id');
         $note = note_row($nid);
+        if ($share && ((int)$note['share_id'] !== (int)$share['id'] || $note['author'] !== $me['name'])) {
+            fail('You can reword only the notes you added from this link.', 403);
+        }
         if (!role_at_least($me, 'editor') && $note['author'] !== $me['name']) {
             fail('Reviewers can reword only their own notes. Reply to this one instead, or ask an editor.', 403);
         }

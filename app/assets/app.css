@@ -879,3 +879,13 @@ body[data-view=playback] .screen-notes {
   .ver-pick { min-width: 0; }
   .ver-pick select { width: 100%; }
 }
+
+/* ---------- share links and guests ---------- */
+.copyrow.two { grid-template-columns: minmax(0, 1fr) auto; margin-top: 6px; }
+.prow.fresh { background: color-mix(in srgb, var(--focus) 8%, transparent); }
+.guest-chip { display: inline-block; margin-left: 5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 3px; font-size: 10.5px;
+  line-height: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); vertical-align: 1px; }
+.dlg-title { display: flex; align-items: baseline; gap: 10px; }
+.dlg-title h2 { margin-right: auto; }
+#filmSelect option:disabled, #versionSelect option:disabled { color: var(--muted); }
+body.guest #tally { margin-left: auto; }

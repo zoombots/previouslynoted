@@ -8,6 +8,9 @@
   const RANK = { viewer: 1, reviewer: 2, editor: 3, admin: 4 };
   let ROLE = document.body.dataset.role || 'viewer';
   const can = (r) => (RANK[ROLE] || 0) >= RANK[r];
+  // Someone outside the team on a share link: one version, in the view the link was made with.
+  const SHARE = document.body.dataset.share || '';
+  const SHARE_VIEW = document.body.dataset.shareView || '';
 
   const STATUS = {
     open:       { label: 'Open',          verb: 'Reopen',          done: false },
@@ -112,7 +115,7 @@
   }
 
   async function api(action, { body, form, query } = {}) {
-    const qs = new URLSearchParams({ action, ...(query || {}) });
+    const qs = new URLSearchParams({ action, ...(SHARE ? { share: SHARE } : {}), ...(query || {}) });
     const opt = { headers: { 'X-CSRF-Token': CSRF }, credentials: 'same-origin' };
     if (form) { opt.method = 'POST'; opt.body = form; }
     else if (body) { opt.method = 'POST'; opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
@@ -192,16 +195,26 @@
   }
   function saveHidden() { ls.set('hidden:' + S.filmId, JSON.stringify([...S.hidden])); }
 
+  // The film and version pickers also hold their actions (for editors): new film, new version, manage, sync.
+  const sep = () => el('option', { disabled: true, text: '──────────' });
   function renderPickers() {
+    const ed = can('editor') && !SHARE;
     const fs = $('filmSelect');
-    fs.replaceChildren(...(S.films.length ? S.films.map((f) => el('option', { value: f.id, text: f.name, selected: f.id === S.filmId })) : [el('option', { text: 'No films yet' })]));
-    fs.disabled = !S.films.length;
+    fs.replaceChildren(
+      ...(S.films.length ? S.films.map((f) => el('option', { value: f.id, text: f.name, selected: f.id === S.filmId })) : [el('option', { value: '', text: 'No films yet', selected: true })]),
+      ...(ed ? [sep(), el('option', { value: '__new', text: '＋ New film…' }), S.films.length ? el('option', { value: '__manage', text: 'Rename or manage films…' }) : null].filter(Boolean) : []));
+    fs.disabled = !S.films.length && !ed;
     const vs = $('versionSelect');
     const list = filmVersions();
-    vs.replaceChildren(...(list.length ? list.map((v) => el('option', { value: v.id, text: `${v.label} · ${revName(v.color)} · ${v.note_count} notes`, selected: v.id === S.versionId })) : [el('option', { text: 'No versions yet' })]));
-    vs.disabled = !list.length;
-    // The version's colour runs along the top of the window and beside the version picker.
     const cur = verOf(S.versionId);
+    const linked = !!(S.conn.frameio && cur?.fio_file_id);
+    vs.replaceChildren(
+      ...(list.length ? list.map((v) => el('option', { value: v.id, text: `${v.label} · ${revName(v.color)} · ${v.note_count} notes`, selected: v.id === S.versionId })) : [el('option', { value: '', text: 'No versions yet', selected: true })]),
+      ...(ed && S.filmId ? [sep(), el('option', { value: '__new', text: '＋ New version…' }), list.length ? el('option', { value: '__manage', text: 'Manage versions…' }) : null,
+        linked ? el('option', { value: '__sync', disabled: syncing.has(S.versionId),
+          text: syncing.has(S.versionId) ? 'Getting comments from Frame.io…' : `Sync comments from Frame.io${cur.fio_synced_at ? ' (last ' + fmtDate(cur.fio_synced_at) + ')' : ''}` }) : null].filter(Boolean) : []));
+    vs.disabled = !list.length && !(ed && S.filmId);
+    // The version's colour runs along the top of the window and beside the version picker.
     document.body.style.setProperty('--ver', cur ? revVar(cur.color) : 'transparent');
     document.body.dataset.rev = cur?.color || '';
     $('verSwatch').title = cur ? `${revName(cur.color)} pages` : '';
@@ -223,20 +236,17 @@
     const src = S.sources.get(id) || (!linked && S.version.video_url ? { url: S.version.video_url, name: 'Video link' } : null);
     setSource(src);
     if (!src && linked) streamFrameio().catch(fail);
-    if (linked && (!S.version.fio_synced_at || Date.now() - new Date(S.version.fio_synced_at) > 5 * 60 * 1000)) syncComments(true).catch(() => {});
+    if (linked && can('editor') && !SHARE && (!S.version.fio_synced_at || Date.now() - new Date(S.version.fio_synced_at) > 5 * 60 * 1000)) syncComments(true).catch(() => {});
     checkJob(id);
   }
 
   /* ---------- Frame.io ---------- */
   function updateLinkUI() {
     const linked = !!(S.conn.frameio && S.version?.fio_file_id);
-    $('syncBtn').hidden = !linked || !can('editor');
     $('streamBtn').hidden = !linked;
     $('qualityRow').hidden = !(linked && video.dataset.remote === '1');
     $('transcribeBtn').hidden = !can('editor') || !(S.conn.elevenlabs && S.version && (S.version.fio_file_id || S.version.video_url));
-    const note = $('syncNote');
-    note.hidden = $('syncBtn').hidden;
-    note.textContent = S.version?.fio_synced_at ? `Last synced ${fmtDate(S.version.fio_synced_at)}` : 'Not synced yet';
+    renderPickers();
   }
 
   async function streamFrameio(resumeFrame) {
@@ -259,9 +269,8 @@
     return run;
   }
   async function doSync(vid, silent) {
-    const btn = $('syncBtn');
-    btn.disabled = true;
-    btn.textContent = 'Getting comments from Frame.io…';
+    if (!silent) toast('Getting comments from Frame.io…');
+    setTimeout(renderPickers);
     try {
       const r = await api('version.sync', { body: { version_id: vid } });
       const v = S.versions.find((x) => x.id === vid);
@@ -275,9 +284,7 @@
     } catch (e) {
       if (!silent) throw e;
     } finally {
-      btn.disabled = false;
-      btn.textContent = 'Sync comments from Frame.io';
-      updateLinkUI();
+      setTimeout(updateLinkUI);
     }
   }
 
@@ -818,7 +825,7 @@
       el('div', { class: 'note-meta' },
         el('span', { class: 'tag', style: `--c:${tagColor(n.tag)}`, text: n.tag || '—', title: trackName(laneOf(n.tag)) }),
         el('span', { class: 'status st-' + n.status, style: `--sc:${statusColor(n.status)}`, text: STATUS[n.status]?.label || n.status }),
-        el('span', { text: n.author }),
+        el('span', {}, n.author, guestChip(n)),
         n.carried ? swatch(verOf(n.origin_version_id)) : null,
         n.replies.length ? el('span', { text: `${n.replies.length} repl${n.replies.length > 1 ? 'ies' : 'y'}` }) : null,
         !n.confirmed ? el('span', { class: 'flag', title: REASON[n.reason]?.long || 'Carried from an earlier version; not placed in this cut yet.', text: REASON[n.reason]?.short || 'to place' }) : null,
@@ -1334,7 +1341,7 @@
         el('button', { type: 'button', class: 'slate-tc', text: tc(n.frame), title: 'Jump to this note', onclick: () => seekFrame(n.frame, n.id) }),
         tagSel,
         el('span', { class: 'status st-' + n.status, style: `--sc:${statusColor(n.status)}`, text: STATUS[n.status]?.label }),
-        el('span', { text: `${n.author} · ${fmtDate(n.created_at)}` }),
+        el('span', {}, n.author, guestChip(n), ` · ${fmtDate(n.created_at)}`),
         n.carried ? el('span', { class: 'flag' }, swatch(verOf(n.origin_version_id)), ` from ${n.origin_label || 'an earlier version'}`) : null,
         shot ? el('span', { class: 'shot', title: 'Shot at this note, from the edit', text: shot[3] }) : null,
       ),
@@ -1342,7 +1349,7 @@
       rangeRow(n),
       placementBanner(n, prev),
       n.replies.length ? el('ul', { class: 'thread' }, ...n.replies.map((r) => el('li', {},
-        el('div', { class: 'meta', text: `${r.author} · ${fmtDate(r.created_at)}${r.version_label && r.version_label !== S.version.label ? ' · on ' + r.version_label : ''}` }),
+        el('div', { class: 'meta' }, r.author, guestChip(r), ` · ${fmtDate(r.created_at)}${r.version_label && r.version_label !== S.version.label ? ' · on ' + r.version_label : ''}`),
         el('div', { class: 'body', text: r.text })))) : null,
       el('details', { class: 'history' },
         el('summary', { text: `History · seen in ${n.history.length} version${n.history.length > 1 ? 's' : ''}` }),
@@ -2012,7 +2019,55 @@
     text.focus();
   }
 
-  function openManage() {
+  /* ---------- share links: send this cut to someone outside the team ---------- */
+  // Notes and replies added from a share link carry a "guest" chip.
+  const guestChip = (x) => (x.share_id ? el('span', { class: 'guest-chip', title: 'Added from a share link', text: 'guest' }) : null);
+  const VIEW_NAMES = { review: 'Review', script: 'Script', playback: 'Playback' };
+  async function openShare(fresh) {
+    const v = S.version;
+    if (!v) { toast('Add a version first.'); return; }
+    let d;
+    try { d = await api('shares', { query: { version_id: v.id } }); } catch (e) { fail(e); return; }
+    const viewSel = el('select', {}, ...Object.entries(VIEW_NAMES).map(([k, t]) => el('option', { value: k, text: t, selected: k === view })));
+    const comment = el('input', { type: 'checkbox', checked: true });
+    const days = el('select', {}, el('option', { value: '7', text: 'for 7 days' }), el('option', { value: '30', text: 'for 30 days', selected: true }),
+      el('option', { value: '0', text: 'until I turn it off' }));
+    const label = el('input', { maxlength: 80, placeholder: 'Who it’s for (optional), e.g. Broadcaster' });
+    const copy = (link) => { navigator.clipboard?.writeText(link); toast('Link copied'); };
+    const row = (sh) => el('li', { class: 'prow' + (fresh === sh.id ? ' fresh' : '') },
+      el('div', { class: 'prow-who' },
+        el('strong', { text: (sh.label || 'Share link') + ` · ${VIEW_NAMES[sh.view]}` + (sh.can_comment ? ', can add notes' : ', watch only') }),
+        el('small', { text: `Made by ${sh.created_by} ${fmtDate(sh.created_at)}` + (sh.expires_at ? ` · works until ${fmtDate(sh.expires_at)}` : '')
+          + (sh.uses ? ` · opened ${sh.uses}×` : ' · not opened yet') + (sh.guests.length ? ` · notes from ${sh.guests.join(', ')}` : '') }),
+        el('div', { class: 'copyrow two' }, el('code', { text: sh.link }),
+          el('button', { type: 'button', class: 'btn', text: 'Copy link', onclick: () => copy(sh.link) }))),
+      el('div', { class: 'prow-acts' }, el('button', { type: 'button', class: 'btn ghost danger', text: 'Turn off…', onclick: async () => {
+        if (!confirm('Turn this link off? Anyone using it loses access straight away. Notes they added stay.')) return;
+        try { await api('share.revoke', { body: { id: sh.id } }); toast('Link turned off.'); openShare(); } catch (err) { fail(err); }
+      } })));
+    showDialog(
+      el('h2', { text: `Share ${v.label}` }),
+      el('p', { class: 'small', text: 'Send a link to someone outside the team: a producer, a broadcaster, a composer. They don’t need an account. They type their name when they open it, and see only this cut, in the view you choose. Notes they add show their name and a guest chip.' }),
+      el('form', { class: 'invite', onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          const r = await api('share.create', { body: { version_id: v.id, view: viewSel.value, can_comment: comment.checked, days: +days.value, label: label.value } });
+          copy(r.share.link);
+          openShare(r.share.id);
+        } catch (err) { fail(err); }
+      } },
+        el('div', { class: 'invite-grid' },
+          el('label', {}, 'They see', viewSel), el('label', {}, 'Link works', days), el('label', {}, 'Label', label)),
+        el('label', { class: 'inline' }, comment, ' They can add notes and replies'),
+        el('div', { class: 'dlg-actions' },
+          el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
+          el('button', { class: 'btn primary', text: 'Make a link and copy it' }))),
+      d.shares.length ? el('h3', { text: 'Links to this cut' }) : null,
+      d.shares.length ? el('ul', { class: 'plist' }, ...d.shares.map(row)) : null);
+  }
+
+  // focus: 'film' opens "Add a film", 'version' opens "Add a new cut".
+  function openManage(focus) {
     const film = S.films.find((f) => f.id === S.filmId);
     const versions = filmVersions();
 
@@ -2022,7 +2077,12 @@
       try { const r = await api('film.create', { body: { name: filmName.value } }); closeDialog(); await loadState({ filmId: r.id }); openManage(); } catch (err) { fail(err); }
     } }, el('div', { class: 'two' }, el('label', {}, 'Film name', filmName), el('div', { class: 'dlg-actions', style: 'align-items:end' }, el('button', { class: 'btn', text: 'Add film' }))));
 
-    const parts = [el('h2', { text: film ? film.name : 'Films & versions' })];
+    const parts = [el('div', { class: 'dlg-title' }, el('h2', { text: film ? film.name : 'Films & versions' }),
+      film ? el('button', { type: 'button', class: 'btn ghost', text: 'Rename…', onclick: async () => {
+        const n = prompt('New name for the film:', film.name);
+        if (!n || !n.trim() || n.trim() === film.name) return;
+        try { await api('film.rename', { body: { film_id: film.id, name: n.trim() } }); film.name = n.trim(); renderPickers(); openManage(); toast('Film renamed.'); } catch (err) { fail(err); }
+      } }) : null)];
 
     if (film) {
       const label = el('input', { name: 'label', required: true, maxlength: 200, placeholder: 'e.g. Part 1 · Oct 21 cut' });
@@ -2070,7 +2130,7 @@
       // Newest cut first; the one you're on is open, the rest are one line each.
       const openId = S.manageOpen && versions.some((v) => v.id === S.manageOpen) ? S.manageOpen : (S.versionId || versions[versions.length - 1]?.id);
       parts.push(
-        el('details', { class: 'new-cut', open: !versions.length },
+        el('details', { class: 'new-cut', open: !versions.length || focus === 'version' },
           el('summary', { class: 'btn primary', text: versions.length ? 'Add a new cut…' : 'Add the first cut…' }),
           newVersion),
         versions.length ? el('div', { class: 'vlist' }, ...[...versions].reverse().map((v) => versionRow(v, v.id === openId))) : el('p', { text: 'No versions yet. Add one for each cut you send for review.' }),
@@ -2083,12 +2143,14 @@
           } }))) : null,
       );
     }
-    parts.push(el('details', { class: 'add-film', open: !S.films.length },
+    parts.push(el('details', { class: 'add-film', open: !S.films.length || focus === 'film' },
       el('summary', { text: S.films.length ? 'Add another film' : 'Add your first film' }), newFilm),
     el('div', { class: 'dlg-actions' },
       film ? el('a', { class: 'btn ghost left', href: `api.php?action=export&film_id=${S.filmId}`, text: 'Download all notes (CSV)' }) : null,
       el('button', { type: 'button', class: 'btn', text: 'Close', onclick: closeDialog })));
     showDialog(...parts);
+    if (focus === 'film') filmName.focus();
+    else if (focus === 'version' && film) document.querySelector('#dlg .new-cut input')?.focus();
   }
   // After an import or change inside Films & versions: reload, and show the dialog again with that version open.
   async function reopenManage(v, msg) {
@@ -2607,7 +2669,7 @@
   try { layouts = JSON.parse(ls.get('layouts') || '{}') || {}; } catch { layouts = {}; }
   if (!layouts.review) { try { layouts.review = JSON.parse(ls.get('layout') || '{}'); } catch { layouts.review = {}; } }   // from before views
   for (const v of VIEWS) layouts[v] = { ...LAYOUT_DEFAULT, ...(layouts[v] || {}) };
-  let view = VIEWS.includes(ls.get('view')) ? ls.get('view') : 'review';
+  let view = SHARE_VIEW && VIEWS.includes(SHARE_VIEW) ? SHARE_VIEW : VIEWS.includes(ls.get('view')) ? ls.get('view') : 'review';
   let layout = layouts[view];
   const ws = $('workspace');
   const stage = document.querySelector('.stage');
@@ -2637,9 +2699,10 @@
   // by side. Playback: the picture as big as it goes, with the notes shown on it as they come up.
   function setView(v) {
     if (!VIEWS.includes(v)) return;
+    if (SHARE && v !== SHARE_VIEW) return;    // a share link shows the view it was made with
     view = v;
     layout = layouts[v];
-    ls.set('view', v);
+    if (!SHARE) ls.set('view', v);
     document.body.dataset.view = v;
     for (const b of document.querySelectorAll('#views button')) b.setAttribute('aria-pressed', String(b.dataset.view === v));
     if (v === 'script') { S.scriptWide = true; setTab('script'); }
@@ -2754,8 +2817,9 @@
           can('reviewer') && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
           can('editor') ? 'Rewrite, cut or add lines; approve them when final. Download the recording script for the VO session.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
-        L('Films & versions: add a film or a version, link it to its Frame.io file, sync comments, import a comment export (CSV), the edit, or a transcript, or transcribe with ElevenLabs.',
-          'Manage → Tracks adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
+        L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
+          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. Their notes carry a guest chip.',
+          'Tracks… (next to Add note here) adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
           'Notes out, on each version: Markers… downloads a marker file for Avid, Resolve or Premiere at the version’s timecode; Post to Frame.io… adds the notes as comments on the linked Frame.io file.')) : null,
       can('admin') ? sec('Admin', false,
         L('People (in this menu): invite someone, choose their role, email a reset link, unlock, turn off or remove.',
@@ -2767,12 +2831,29 @@
 
   /* ---------- wiring ---------- */
   $('filmSelect').addEventListener('change', async (e) => {
-    S.filmId = +e.target.value;
+    const act = e.target.value;
+    if (act.startsWith('__') || act === '') {
+      renderPickers();
+      if (act === '__new') openManage('film');
+      else if (act === '__manage') openManage();
+      return;
+    }
+    S.filmId = +act;
     const vs = filmVersions();
     await selectVersion(vs[vs.length - 1]?.id ?? null);
   });
-  $('versionSelect').addEventListener('change', (e) => selectVersion(+e.target.value).catch(fail));
-  $('manageBtn').addEventListener('click', openManage);
+  $('versionSelect').addEventListener('change', (e) => {
+    const act = e.target.value;
+    if (act.startsWith('__') || act === '') {
+      renderPickers();
+      if (act === '__new') openManage('version');
+      else if (act === '__manage') openManage();
+      else if (act === '__sync') syncComments(false).catch(fail);
+      return;
+    }
+    selectVersion(+act).catch(fail);
+  });
+  $('shareBtn')?.addEventListener('click', () => openShare());
   $('playBtn').addEventListener('click', playPause);
   $('prevNote').addEventListener('click', () => jumpNote(-1));
   $('nextNote').addEventListener('click', () => jumpNote(1));
@@ -2784,7 +2865,7 @@
   });
   $('settingsBtn')?.addEventListener('click', openSettings);
   $('peopleBtn')?.addEventListener('click', () => openPeople());
-  $('accountBtn').addEventListener('click', openAccount);
+  $('accountBtn')?.addEventListener('click', openAccount);
   $('helpBtn').addEventListener('click', openHelp);
   // Pop-up menus (account, Manage, playback, More): close after a choice, on Escape, and when clicking elsewhere.
   // Menus inside scrolling panels open above their button, placed on screen so nothing clips them.
@@ -2807,13 +2888,12 @@
     pop.style.top = 'auto'; pop.style.bottom = `${innerHeight - r.top + 6}px`;
     pop.style.left = 'auto'; pop.style.right = `${Math.max(8, innerWidth - r.right)}px`;
   }, true);
-  if (!can('editor')) {
-    $('manageMenu').hidden = true;
+  if (!can('editor') || SHARE) {
+    $('tracksBtn').hidden = true;
     $('scriptFile').closest('label').hidden = true;
   }
   $('tracksBtn').addEventListener('click', () => openTracks());
   if (!can('reviewer')) $('addBtn').hidden = true;
-  $('syncBtn').addEventListener('click', () => syncComments(false).catch(fail));
   $('streamBtn').addEventListener('click', () => streamFrameio().catch(fail));
   $('quality').addEventListener('change', () => streamFrameio(S.frame).catch(fail));
   $('transcribeBtn').addEventListener('click', () => S.versionId && startTranscribe(S.versionId).catch(fail));

@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.8');
+define('APP_VERSION', '0.7.9');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -22,6 +22,7 @@ function next_revision_color(PDO $pdo, int $filmId): string
 }
 
 require_once __DIR__ . '/users.php';
+require_once __DIR__ . '/share.php';
 
 if (!function_exists('mb_strlen')) {
     function mb_strlen(string $s): int { return preg_match_all('/./us', $s); }
@@ -323,6 +324,20 @@ SQL);
     $pdo->exec('CREATE TABLE IF NOT EXISTS note_edits (
         id INTEGER PRIMARY KEY, note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
         old_text TEXT NOT NULL, new_text TEXT NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
+    // 0.7.9: share links for people outside the team (lib/share.php). Notes and replies they add carry the link's id.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS shares (
+        id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE,
+        film_id INTEGER NOT NULL REFERENCES films(id) ON DELETE CASCADE,
+        version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+        view TEXT NOT NULL DEFAULT \'review\', can_comment INTEGER NOT NULL DEFAULT 1, label TEXT NOT NULL DEFAULT \'\',
+        created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER, revoked_at TEXT,
+        last_used_at TEXT, uses INTEGER NOT NULL DEFAULT 0)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS shares_version ON shares(version_id)');
+    foreach (['notes', 'replies'] as $t) {
+        if (!in_array('share_id', array_column($pdo->query("PRAGMA table_info($t)")->fetchAll(), 'name'), true)) {
+            $pdo->exec("ALTER TABLE $t ADD COLUMN share_id INTEGER");
+        }
+    }
     users_migrate($pdo);
 }
 
