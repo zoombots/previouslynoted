@@ -95,7 +95,7 @@ function note_row(int $id): array
  */
 const ACTION_ROLES = [
     // reviewers
-    'note.create' => 'reviewer', 'note.reply' => 'reviewer', 'note.edit' => 'reviewer', 'script.edit' => 'reviewer',
+    'note.create' => 'reviewer', 'note.reply' => 'reviewer', 'note.edit' => 'reviewer', 'script.edit' => 'reviewer', 'script.time' => 'reviewer',
     // admins
     'version.delete' => 'admin', 'settings' => 'admin', 'settings.frameio' => 'admin', 'settings.frameio.clear' => 'admin',
     'settings.elevenlabs' => 'admin', 'settings.elevenlabs.clear' => 'admin',
@@ -988,7 +988,33 @@ switch ("$method $action") {
         }
         $segs = transcript_segments((int)$t['id']);
         $lines = script_recorded($vid, script_lines($vid, (int)$t['id'], $segs));
-        json_out(['transcript_id' => (int)$t['id'], 'lines' => array_values($lines)]);
+        json_out(['transcript_id' => (int)$t['id'], 'lines' => array_values($lines),
+            'times' => script_times($vid, (int)$t['id'], $segs, $lines, (float)version_row($vid)['tc_base'])]);
+
+    case 'POST script.time':
+        // Move a line of the new script, or change how long it lasts, from the timeline's Script track.
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        $tid = int_in($in, 'transcript_id');
+        $t = active_transcript($vid);
+        if (!$t || (int)$t['id'] !== $tid) {
+            fail('The transcript has changed since you opened it. Reload the page and try again.', 409);
+        }
+        $segs = transcript_segments($tid);
+        $i = int_in($in, 'seg_idx');
+        $slot = int_in($in, 'slot');
+        $lines = script_lines($vid, $tid, $segs);
+        if (!isset($segs[$i]) || ($slot > 0 && (!isset($lines["$i:$slot"]) || $lines["$i:$slot"]['state'] === 'removed'))) {
+            fail('That line no longer exists.', 404);
+        }
+        $start = max(0, int_in($in, 'start'));
+        $end = int_in($in, 'end');
+        if ($end <= $start) {
+            fail('A line needs to end after it starts.');
+        }
+        $pdo->prepare('INSERT INTO script_times (version_id, transcript_id, seg_idx, seg_norm, slot, start_frame, end_frame, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)')
+            ->execute([$vid, $tid, $i, $segs[$i]['norm'], $slot, $start, $end, $user, now_iso()]);
+        json_out(['ok' => true, 'times' => script_times($vid, $tid, $segs, $lines, (float)$v['tc_base'])]);
 
     case 'POST script.edit':
         $vid = int_in($in, 'version_id');
@@ -1039,7 +1065,8 @@ switch ("$method $action") {
         $pdo->prepare('INSERT INTO script_edits (version_id, transcript_id, seg_idx, seg_norm, slot, state, text, by_name, at, share_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
             ->execute([$vid, $tid, $i, $segs[$i]['norm'], $slot, $state, $text, $user, now_iso(), $share ? (int)$share['id'] : null]);
         $lines = script_recorded($vid, script_lines($vid, $tid, $segs));
-        json_out(['ok' => true, 'line' => $lines[$i . ':' . $slot] ?? null, 'lines' => array_values($lines)]);
+        json_out(['ok' => true, 'line' => $lines[$i . ':' . $slot] ?? null, 'lines' => array_values($lines),
+            'times' => script_times($vid, $tid, $segs, $lines, (float)version_row($vid)['tc_base'])]);
 
     case 'GET script.export':
         $vid = int_in($in, 'version_id');
@@ -1048,17 +1075,19 @@ switch ("$method $action") {
         $segs = transcript_segments((int)$t['id']);
         $lines = script_lines($vid, (int)$t['id'], $segs);
         $base = (int)$v['tc_base'];
+        $times = script_times($vid, (int)$t['id'], $segs, $lines, (float)$base);
+        $tcAt = fn(string $key) => frames_to_tc($times[$key][0] + (int)$v['tc_start'], $base);
         $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
         $fname = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label']);
         $rows = [];
         foreach ($segs as $i => $s) {
             $l = $lines["$i:0"] ?? null;
-            $rows[] = ['tc' => frames_to_tc($s['start'] + (int)$v['tc_start'], $base), 'speaker' => $s['speaker'], 'current' => $s['text'],
+            $rows[] = ['tc' => $tcAt("$i:0"), 'speaker' => $s['speaker'], 'current' => $s['text'],
                 'state' => $l['state'] ?? 'same', 'new' => $l && in_array($l['state'], ['draft', 'approved'], true) ? $l['text'] : '', 'by' => $l['by'] ?? '', 'at' => $l['at'] ?? ''];
             $extra = array_filter($lines, fn($x) => $x['i'] === $i && $x['slot'] > 0 && $x['state'] !== 'removed');
             usort($extra, fn($a, $b) => $a['slot'] <=> $b['slot']);
             foreach ($extra as $x) {
-                $rows[] = ['tc' => frames_to_tc($s['start'] + (int)$v['tc_start'], $base) . ' +' . $x['slot'], 'speaker' => $s['speaker'], 'current' => '',
+                $rows[] = ['tc' => $tcAt("$i:{$x['slot']}"), 'speaker' => $s['speaker'], 'current' => '',
                     'state' => $x['state'] === 'approved' ? 'approved (new line)' : 'draft (new line)', 'new' => $x['text'], 'by' => $x['by'], 'at' => $x['at']];
             }
         }

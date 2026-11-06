@@ -17,7 +17,7 @@ const SHARE_VIEWS = ['review' => 'Review', 'script' => 'Script', 'playback' => '
 /** The actions a guest may use. Each one is also checked against the link's film and version in api.php. */
 const GUEST_ACTIONS = [
     'GET state', 'GET notes', 'GET transcript', 'GET script', 'GET version.media', 'GET transcribe.status',
-    'POST note.create', 'POST note.reply', 'POST note.edit', 'POST script.edit',
+    'POST note.create', 'POST note.reply', 'POST note.edit', 'POST script.edit', 'POST script.time',
 ];
 
 /** What a link allows beyond watching: notes and replies, and suggesting script wording. */
@@ -25,7 +25,7 @@ function share_allows(array $share, string $action): bool
 {
     return match ($action) {
         'note.create', 'note.reply', 'note.edit' => (bool)(int)$share['can_comment'],
-        'script.edit' => (bool)(int)($share['can_script'] ?? 0),
+        'script.edit', 'script.time' => (bool)(int)($share['can_script'] ?? 0),
         default => true,
     };
 }

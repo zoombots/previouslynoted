@@ -14,25 +14,36 @@ declare(strict_types=1);
 
 const SCRIPT_STATES = ['same', 'draft', 'approved', 'cut', 'removed'];
 
-function script_lines(int $versionId, int $transcriptId, array $segs): array
+/** Which segment of the current transcript a saved row (edit or timing) is about, or null if it's gone. */
+function script_row_segment(array $r, int $transcriptId, array $segs, array $byNorm): ?int
 {
-    $st = db()->prepare('SELECT * FROM script_edits WHERE version_id = ? ORDER BY id');
-    $st->execute([$versionId]);
-    $rows = $st->fetchAll();
+    if ((int)$r['transcript_id'] === $transcriptId && isset($segs[(int)$r['seg_idx']])) {
+        return (int)$r['seg_idx'];
+    }
+    return $byNorm[$r['seg_norm']][0] ?? null;
+}
+
+function script_by_norm(array $segs): array
+{
     $byNorm = [];
     foreach ($segs as $i => $s) {
         if ($s['norm'] !== '') {
             $byNorm[$s['norm']][] = $i;
         }
     }
+    return $byNorm;
+}
+
+function script_lines(int $versionId, int $transcriptId, array $segs): array
+{
+    $st = db()->prepare('SELECT * FROM script_edits WHERE version_id = ? ORDER BY id');
+    $st->execute([$versionId]);
+    $rows = $st->fetchAll();
+    $byNorm = script_by_norm($segs);
     $lines = [];
     foreach ($rows as $r) {
-        // Which segment of the current transcript is this edit about?
-        if ((int)$r['transcript_id'] === $transcriptId && isset($segs[(int)$r['seg_idx']])) {
-            $i = (int)$r['seg_idx'];
-        } elseif (isset($byNorm[$r['seg_norm']])) {
-            $i = $byNorm[$r['seg_norm']][0];
-        } else {
+        $i = script_row_segment($r, $transcriptId, $segs, $byNorm);
+        if ($i === null) {
             continue; // the line isn't in this transcript any more
         }
         $key = $i . ':' . (int)$r['slot'];
@@ -74,4 +85,38 @@ function script_recorded(int $versionId, array $lines): array
     }
     unset($l);
     return $lines;
+}
+
+/**
+ * When each line of the new script plays: [key "i:slot" => [start, end]] in frames.
+ * A line keeps the transcript's timing unless someone moved it on the timeline. A new line goes after the line it
+ * follows (or the new line before it), lasting as long as its words take to say (about 2.5 words a second, at least
+ * a second).
+ */
+function script_times(int $versionId, int $transcriptId, array $segs, array $lines, float $fps): array
+{
+    $st = db()->prepare('SELECT * FROM script_times WHERE version_id = ? ORDER BY id');
+    $st->execute([$versionId]);
+    $byNorm = script_by_norm($segs);
+    $set = [];
+    foreach ($st->fetchAll() as $r) {
+        $i = script_row_segment($r, $transcriptId, $segs, $byNorm);
+        if ($i !== null) {
+            $set[$i . ':' . (int)$r['slot']] = [(int)$r['start_frame'], (int)$r['end_frame']];
+        }
+    }
+    $times = [];
+    foreach ($segs as $i => $s) {
+        $times["$i:0"] = $set["$i:0"] ?? [(int)$s['start'], (int)$s['end']];
+        $prevEnd = $times["$i:0"][1];
+        $extra = array_filter($lines, fn($x) => $x['i'] === $i && $x['slot'] > 0 && $x['state'] !== 'removed');
+        usort($extra, fn($a, $b) => $a['slot'] <=> $b['slot']);
+        foreach ($extra as $x) {
+            $key = "$i:{$x['slot']}";
+            $words = max(1, count(preg_split('/\s+/u', trim((string)$x['text']), -1, PREG_SPLIT_NO_EMPTY)));
+            $times[$key] = $set[$key] ?? [$prevEnd, $prevEnd + (int)round(max(1.0, $words / 2.5) * $fps)];
+            $prevEnd = $times[$key][1];
+        }
+    }
+    return $times;
 }

@@ -424,6 +424,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
         <div class="tl-view" id="tlView" title="Drag the ruler to scrub · scroll to zoom · drag to move">
           <div class="tl-scale" id="tlScale"></div>
           <div class="tl-shots" id="tlShots"></div>
+          <div class="tl-script" id="tlScript" hidden></div>
           <div class="tl-lanes" id="tlLanes"></div>
           <div class="tl-head" id="tlHead"></div>
         </div>

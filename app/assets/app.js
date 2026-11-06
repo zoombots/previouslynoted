@@ -57,7 +57,7 @@
     tab: 'notes',
     conn: { frameio: false, elevenlabs: false },
     cats: [], hidden: new Set(),
-    scriptWide: false, scriptEdits: { transcriptId: null, lines: new Map() }, editingLine: null,
+    scriptWide: false, scriptEdits: { transcriptId: null, lines: new Map(), times: {} }, editingLine: null,
     jobTimer: null,
   };
   // J/K/L shuttle state (see the Shuttle section).
@@ -911,13 +911,18 @@
     }
     $('tlShots').replaceChildren(...shotEls);
     $('tlShots').hidden = !S.shots.length;
+    const scriptOn = renderScriptTrack(w, end);
 
     // Lanes: one per track. A hidden track folds down to a thin row.
     const lanes = trackList();
     // The letters column grows to fit the longest track code (CHART, VFX…).
     const longest = Math.max(1, ...lanes.map((l) => (l.key || '·').length));
     $('tl').style.setProperty('--gutter-w', `${Math.max(22, longest * 8 + 8)}px`);
-    $('tlGutter').replaceChildren(...[el('span', { class: 'g-scale' }), S.shots.length ? el('span', { class: 'g-shots', title: 'Shots from the edit' }) : null].filter(Boolean),
+    $('tlGutter').replaceChildren(...[el('span', { class: 'g-scale' }), S.shots.length ? el('span', { class: 'g-shots', title: 'Shots from the edit' }) : null,
+      scriptOn ? el('button', { type: 'button', class: 'g-lane g-script' + (S.hidden.has(SCRIPT_LANE) ? ' off' : '') + (S.scriptTwoRows ? ' two' : ''), style: '--c:var(--tag-n)',
+        title: `Script: each line of the new script at its time. Click to ${S.hidden.has(SCRIPT_LANE) ? 'show' : 'hide'}.` + (canTime() ? ' Drag a line to move it, or its edges to change how long it lasts.' : ''),
+        'aria-pressed': S.hidden.has(SCRIPT_LANE) ? 'false' : 'true', 'aria-label': 'Script track',
+        onclick: () => { if (S.hidden.has(SCRIPT_LANE)) S.hidden.delete(SCRIPT_LANE); else S.hidden.add(SCRIPT_LANE); saveHidden(); renderTimeline(); }, text: 'TX' }) : null].filter(Boolean),
       ...lanes.map((l) => el('button', {
         type: 'button', class: 'g-lane' + (S.hidden.has(l.key) ? ' off' : ''), style: `--c:var(--${l.color})`,
         title: `${l.label}: click to ${S.hidden.has(l.key) ? 'show' : 'hide'}, Alt-click to show only this track`,
@@ -985,6 +990,64 @@
     moveHead();
   }
 
+  /* ---------- the Script track: the new script's lines at their times ---------- */
+  const SCRIPT_LANE = '__script';
+  const canTime = () => canScript() && !!S.scriptEdits.transcriptId && S.script.activeId === S.script.latestId;
+  // Every line of the new script in time order: the transcript's lines and the ones added after them.
+  function scriptTrackLines() {
+    const segs = S.script.segments, out = [];
+    if (!segs.length || !S.scriptEdits.transcriptId || S.script.activeId !== S.script.latestId) return out;
+    const T = S.scriptEdits.times || {};
+    segs.forEach((g, i) => {
+      const own = S.scriptEdits.lines.get(`${i}:0`);
+      const t0 = T[`${i}:0`] || [g.start, g.end ?? g.start + rate() * 2];
+      out.push({ key: `${i}:0`, i, slot: 0, start: t0[0], end: t0[1], state: own?.state || 'same',
+        text: own && ['draft', 'approved'].includes(own.state) ? own.text : g.text });
+      for (const x of [...S.scriptEdits.lines.values()].filter((l) => l.i === i && l.slot > 0 && l.state !== 'removed').sort((a, b) => a.slot - b.slot)) {
+        const t = T[`${i}:${x.slot}`];
+        if (t) out.push({ key: `${i}:${x.slot}`, i, slot: x.slot, start: t[0], end: t[1], state: x.state, text: x.text, added: true });
+      }
+    });
+    return out;
+  }
+  function renderScriptTrack(w, end) {
+    const box = $('tlScript');
+    const lines = scriptTrackLines();
+    box.hidden = !lines.length;
+    if (!lines.length) { box.replaceChildren(); return false; }
+    box.classList.toggle('off', S.hidden.has(SCRIPT_LANE));
+    // New lines sit on a second row under the transcript's lines, so they never cover them.
+    S.scriptTwoRows = lines.some((l) => l.added);
+    box.classList.toggle('two', S.scriptTwoRows);
+    if (S.hidden.has(SCRIPT_LANE)) { box.replaceChildren(); return true; }
+    const edit = canTime();
+    const kids = [];
+    for (const l of lines) {
+      if (l.end < TL.start || l.start > end) continue;
+      const x0 = fx(l.start), width = Math.max(3, fx(l.end) - x0);
+      const st = { same: '', draft: 'Draft', approved: 'Approved', cut: 'Crossed out' }[l.state] || '';
+      kids.push(el('div', {
+        class: `sl st-${l.state}` + (l.added ? ' added' : '') + (width > 34 ? ' wide' : ''), 'data-key': l.key, 'data-start': l.start,
+        style: `left:${x0}px;width:${width}px`,
+        title: `${tc(l.start)} – ${tc(l.end)} (${fmtDur(l.end - l.start)})${l.added ? ' · new line' : ''}${st ? ' · ' + st : ''}\n${l.text}`
+          + (edit ? '\nDrag to move it; drag an edge to change how long it lasts.' : ''),
+      }, width > 34 ? el('span', { text: l.text }) : null,
+      edit ? el('span', { class: 'sl-h l', 'data-edge': 'l', 'aria-hidden': 'true' }) : null,
+      edit ? el('span', { class: 'sl-h r', 'data-edge': 'r', 'aria-hidden': 'true' }) : null));
+    }
+    box.replaceChildren(...kids);
+    return true;
+  }
+  async function saveScriptTime(key, start, end, old) {
+    const [i, slot] = key.split(':').map(Number);
+    try {
+      const r = await api('script.time', { body: { version_id: S.versionId, transcript_id: S.scriptEdits.transcriptId, seg_idx: i, slot, start, end } });
+      S.scriptEdits.times = r.times;
+      renderTimeline(); renderScript();
+      toast(`${slot ? 'New line' : 'Line'} now ${tc(start)} – ${tc(end)} (${fmtDur(end - start)})`, old ? { label: 'Undo', run: () => saveScriptTime(key, old[0], old[1]) } : null);
+    } catch (e) { fail(e); S.scriptEdits.times[key] = old; renderTimeline(); }
+  }
+
   function moveHead() {
     const total = totalFrames();
     // While playing, page the zoomed view so the playhead stays in sight.
@@ -1002,6 +1065,10 @@
     $('tlOverHead').style.left = `${Math.min(1, S.frame / total) * 100}%`;
     for (const m of document.querySelectorAll('.mk.on')) m.classList.remove('on');
     for (const n of activeNotes().notes) document.querySelector(`.mk[data-id="${n.id}"]`)?.classList.add('on');
+    for (const b of document.querySelectorAll('#tlScript .sl')) {
+      const t = S.scriptEdits.times?.[b.dataset.key];
+      b.classList.toggle('on', !!t && S.frame >= t[0] && S.frame < t[1]);
+    }
   }
 
   // Pointer: click a note to go to it, click a group to zoom into it, drag to move, click empty space to seek.
@@ -1020,6 +1087,13 @@
       if (e.button !== 0) return;
       const target = e.target.closest('.mk');
       drag = { x: e.clientX, y: e.clientY, start: TL.start, moved: false, mode: null, target };
+      const sl = e.target.closest('.sl');
+      if (sl) {
+        const t = S.scriptEdits.times[sl.dataset.key] || [+sl.dataset.start, +sl.dataset.start + 1];
+        drag.sl = { key: sl.dataset.key, old: [...t], f0: frameAtX(e.clientX) };
+        const edge = e.target.closest('.sl-h')?.dataset.edge;
+        if (edge && canTime()) { drag.mode = edge === 'l' ? 'sl-l' : 'sl-r'; drag.moved = true; view.classList.add('trimming'); }
+      }
       // Scrub: press on the ruler, or on the playhead itself, and drag.
       const head = $('tlHead').getBoundingClientRect();
       if (e.target.closest('.tl-scale') || (!target && Math.abs(e.clientX - (head.left + head.width / 2)) <= 6)) {
@@ -1042,7 +1116,17 @@
         renderTimeline();
         return;
       }
+      if (drag.mode && drag.mode.startsWith('sl-')) {
+        // Move a script line, or one of its edges; it keeps at least a quarter of a second.
+        const [s0, e0] = drag.sl.old, d = frameAtX(e.clientX) - drag.sl.f0, min = Math.max(1, Math.round(rate() / 4));
+        const t = drag.mode === 'sl-l' ? [Math.max(0, Math.min(e0 - min, s0 + d)), e0]
+          : drag.mode === 'sl-r' ? [s0, Math.max(s0 + min, e0 + d)] : [Math.max(0, s0 + d), Math.max(0, s0 + d) + (e0 - s0)];
+        S.scriptEdits.times[drag.sl.key] = t;
+        renderTimeline();
+        return;
+      }
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.mode && drag.sl && canTime() && Math.abs(dx) >= 4) { drag.mode = 'sl-move'; drag.moved = true; view.classList.add('moving'); return; }
       if (!drag.mode) {
         // Up or down on a note moves it to another track; sideways moves along the cut.
         if (can('editor') && drag.target?.dataset.id && Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) drag.mode = 'track';
@@ -1072,6 +1156,17 @@
       drag = null;
       if (d.mode === 'scrub') return;
       if (d.mode === 'out') { saveOut(d.note, d.note.end, d.oldEnd); return; }
+      if (d.mode && d.mode.startsWith('sl-')) {
+        const t = S.scriptEdits.times[d.sl.key];
+        if (t && (t[0] !== d.sl.old[0] || t[1] !== d.sl.old[1])) saveScriptTime(d.sl.key, t[0], t[1], d.sl.old);
+        return;
+      }
+      if (d.sl && !d.moved) {
+        // A click on a script line goes to its start and shows it in the transcript.
+        const t = S.scriptEdits.times[d.sl.key];
+        if (t) seekFrame(t[0]);
+        return;
+      }
       if (d.mode === 'track') {
         for (const l of view.querySelectorAll('.tl-lane.drop')) l.classList.remove('drop');
         const n = S.notes.find((x) => x.id === +d.target.dataset.id);
@@ -1096,6 +1191,7 @@
     view.addEventListener('pointerup', up);
     view.addEventListener('pointercancel', () => {
       if (drag?.mode === 'out') { drag.note.end = drag.oldEnd; renderTimeline(); }
+      if (drag?.sl && drag.mode?.startsWith('sl-')) { S.scriptEdits.times[drag.sl.key] = drag.sl.old; renderTimeline(); }
       drag = null; view.classList.remove('dragging', 'moving', 'scrubbing', 'trimming');
     });
     view.addEventListener('wheel', (e) => {
@@ -1643,14 +1739,15 @@
   }
 
   async function loadScriptEdits(render = true) {
-    S.scriptEdits = { transcriptId: null, lines: new Map() };
+    S.scriptEdits = { transcriptId: null, lines: new Map(), times: {} };
     if (!S.versionId || !S.script.segments.length) return;
     const r = await api('script', { query: { version_id: S.versionId } });
-    setScriptLines(r.transcript_id, r.lines);
+    setScriptLines(r.transcript_id, r.lines, r.times);
     if (render) renderScript();
   }
-  function setScriptLines(tid, lines) {
-    S.scriptEdits = { transcriptId: tid, lines: new Map(lines.map((l) => [`${l.i}:${l.slot}`, l])) };
+  function setScriptLines(tid, lines, times) {
+    S.scriptEdits = { transcriptId: tid, lines: new Map(lines.map((l) => [`${l.i}:${l.slot}`, l])), times: times || S.scriptEdits.times || {} };
+    if (typeof renderTimeline === 'function' && S.script.segments.length) renderTimeline();
   }
 
   function segmentIndexAt(f) {
@@ -1738,8 +1835,10 @@
         wide ? el('div', { class: 'cell-notes' }, notesBox, addNoteBox(g)) : null,
         wide ? newCell(i, 0, g) : null));
       for (const x of extra) {
-        rows.push(el('li', { class: 'tline wide added', 'data-after': i },
-          el('span', { class: 'seg-tc', text: '+' }),
+        const xt = S.scriptEdits.times[`${i}:${x.slot}`];
+        rows.push(el('li', { class: 'tline wide added', 'data-after': i, 'data-key': `${i}:${x.slot}`,
+          onclick: (e) => { if (xt && !e.target.closest('.cell-new, button, textarea')) seekFrame(xt[0]); } },
+          el('span', { class: 'seg-tc', text: xt ? tc(xt[0]) : '+' }),
           el('div', { class: 'seg-main' }, el('span', { class: 'seg-change', text: 'New line after ' + tc(g.start) })),
           el('div', { class: 'cell-notes' }),
           newCell(i, x.slot, g)));
@@ -1762,7 +1861,7 @@
     try {
       const before = S.scriptEdits.lines.get(`${i}:${slot}`);
       const r = await api('script.edit', { body: { version_id: S.versionId, transcript_id: S.scriptEdits.transcriptId, seg_idx: i, slot, state: st, text: text ?? '' } });
-      setScriptLines(S.scriptEdits.transcriptId, r.lines);
+      setScriptLines(S.scriptEdits.transcriptId, r.lines, r.times);
       S.editingLine = null;
       renderScript();
       if (undoMsg) toast(undoMsg, { label: 'Undo', run: () => saveLine(i, slot, before?.state || 'same', before?.text || '') });
@@ -2868,7 +2967,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
-          can('editor') ? 'Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download the recording script for the VO session.' : null)),
+          can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download the recording script for the VO session.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
           'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',

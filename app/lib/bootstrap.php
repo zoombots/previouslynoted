@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.12');
+define('APP_VERSION', '0.7.13');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -333,6 +333,12 @@ SQL);
         created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at INTEGER, revoked_at TEXT,
         last_used_at TEXT, uses INTEGER NOT NULL DEFAULT 0)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS shares_version ON shares(version_id)');
+    // 0.7.13: when each line of the new script plays (dragged on the timeline's Script track). Latest row wins.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS script_times (
+        id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+        transcript_id INTEGER, seg_idx INTEGER NOT NULL, seg_norm TEXT NOT NULL DEFAULT \'\', slot INTEGER NOT NULL DEFAULT 0,
+        start_frame INTEGER NOT NULL, end_frame INTEGER NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS script_times_v ON script_times(version_id, id)');
     // 0.7.10: links that let the guest suggest script wording.
     if (!in_array('can_script', array_column($pdo->query('PRAGMA table_info(shares)')->fetchAll(), 'name'), true)) {
         $pdo->exec('ALTER TABLE shares ADD COLUMN can_script INTEGER NOT NULL DEFAULT 0');

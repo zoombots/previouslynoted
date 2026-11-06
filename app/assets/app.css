@@ -908,3 +908,28 @@ body.guest #tally { margin-left: auto; }
 .seg-main:has(.seg-x) .seg-text, .seg-main:has(.seg-x) .seg-speaker { margin-right: 30px; }
 .seg-main.crossed .seg-speaker { color: var(--faint); text-decoration: line-through; }
 @media (hover: none) { .seg-x { opacity: 1; } }
+
+/* ---------- the Script track on the timeline ---------- */
+.tl-script { position: relative; height: 22px; border-top: 1px dashed color-mix(in srgb, var(--line) 60%, transparent); }
+.tl-script.off, .tl-script.two.off { height: 14px; background: color-mix(in srgb, var(--line) 30%, transparent); }
+.tl-gutter .g-script.off { height: 14px; }
+.sl { position: absolute; top: 3px; height: 16px; box-sizing: border-box; border-radius: 3px; overflow: hidden;
+  background: color-mix(in srgb, var(--tag-n) 18%, var(--panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tag-n) 45%, transparent);
+  color: var(--muted); font-size: 11px; line-height: 16px; cursor: pointer; z-index: 1; }
+.sl span:not(.sl-h) { display: block; padding: 0 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.sl:hover, .sl.on { color: var(--text); background: color-mix(in srgb, var(--tag-n) 30%, var(--panel)); }
+.sl.st-draft { box-shadow: inset 0 0 0 1px var(--tag-e); background: color-mix(in srgb, var(--tag-e) 16%, var(--panel)); color: var(--text); }
+.sl.st-approved { box-shadow: inset 0 0 0 1px var(--st-approved); background: color-mix(in srgb, var(--st-approved) 22%, var(--panel)); color: var(--text); }
+.sl.added { border-left: 3px solid var(--st-addressed); top: 22px; }
+.sl.added.st-draft { border-left-style: dashed; }
+.tl-script.two { height: 41px; }
+.tl-gutter .g-script.two { height: 41px; align-items: flex-start; padding-top: 4px; }
+.sl:hover { z-index: 2; }
+.sl.st-cut { background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--line) 50%, transparent) 4px 6px); box-shadow: inset 0 0 0 1px var(--line); }
+.sl.st-cut span:not(.sl-h) { text-decoration: line-through; color: var(--faint); }
+.sl-h { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; opacity: 0; }
+.sl-h.l { left: 0; } .sl-h.r { right: 0; }
+.sl-h::after { content: ""; position: absolute; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; background: var(--text); }
+.sl-h.l::after { left: 1px; } .sl-h.r::after { right: 1px; }
+.sl:hover .sl-h, .tl-view.trimming .sl-h { opacity: 1; }
+.tl-view.moving .sl { cursor: grabbing; }
