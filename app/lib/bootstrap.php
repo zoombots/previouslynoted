@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.13');
+define('APP_VERSION', '0.7.14');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */

@@ -1802,7 +1802,7 @@
     $('scriptSetupSum').textContent = cur ? `Transcript: ${cur.filename}` : 'Transcript files';
     if (!sc.uploads.length && can('editor')) $('scriptSetup').open = true;
     $('scriptWideBtn').hidden = !sc.segments.length;
-    $('scriptDl').hidden = !wide;
+    $('scriptDl').hidden = !sc.segments.length || !S.scriptEdits.transcriptId;
     if (!sc.segments.length) { ol.replaceChildren(); $('caption').hidden = true; return; }
     const keepScroll = ol.scrollTop;
     const rows = [];
@@ -2166,6 +2166,43 @@
         el('button', { type: 'button', class: 'btn ghost', text: 'Cancel', onclick: closeDialog }),
         el('button', { class: 'btn primary', text: 'Add note' }))));
     text.focus();
+  }
+
+  /* ---------- downloading the script: original, new, or just the changes ---------- */
+  function openScriptDownload() {
+    const changed = [...S.scriptEdits.lines.values()].filter((l) => (l.slot === 0 ? l.state !== 'same' : l.state !== 'removed')).length;
+    const pick = (name, value, title, desc, checked) => el('label', { class: 'dl-choice' },
+      el('input', { type: 'radio', name, value, checked }), el('span', {}, el('strong', { text: title }), el('small', { text: desc })));
+    const what = el('div', { class: 'dl-choices', role: 'radiogroup', 'aria-label': 'What to download' },
+      pick('dlwhat', 'original', 'Original script', 'The transcript as it is, line by line with timecodes.', false),
+      pick('dlwhat', 'merged', 'Original with the new script in place', 'The whole script, with new wording replacing the old line on the same row, added lines where they go, and crossed-out lines left out. Changed lines are marked.', true),
+      pick('dlwhat', 'changes', 'Only the script changes', `Just the rewritten, added and crossed-out lines (${changed}), for the recording session.`, false));
+    const fmt = el('div', { class: 'dl-choices row', role: 'radiogroup', 'aria-label': 'File type' },
+      pick('dlfmt', 'txt', 'Text', 'To read or print.', true), pick('dlfmt', 'csv', 'Spreadsheet (CSV)', 'Excel, Numbers, Google Sheets.', false));
+    const drafts = el('input', { type: 'checkbox', checked: true });
+    const showCut = el('input', { type: 'checkbox' });
+    const cutRow = el('label', { class: 'inline' }, showCut, ' Keep crossed-out lines, marked as crossed out');
+    const optRow = el('div', { class: 'dl-opts' }, el('label', { class: 'inline' }, drafts, ' Include drafts (otherwise only approved changes)'), cutRow);
+    const sync = () => {
+      const w = what.querySelector('input:checked').value;
+      optRow.hidden = w === 'original';
+      cutRow.hidden = w !== 'merged';
+    };
+    what.addEventListener('change', sync);
+    sync();
+    showDialog({ lightDismiss: true },
+      el('h2', { text: `Download the script · ${S.version.label}` }),
+      el('h3', { text: 'What' }), what,
+      optRow,
+      el('h3', { text: 'File' }), fmt,
+      el('div', { class: 'dlg-actions' },
+        el('button', { type: 'button', class: 'btn ghost left', text: 'Cancel', onclick: closeDialog }),
+        el('button', { type: 'button', class: 'btn primary', text: 'Download', onclick: () => {
+          const q = new URLSearchParams({ action: 'script.export', version_id: S.versionId, content: what.querySelector('input:checked').value,
+            format: fmt.querySelector('input:checked').value, drafts: drafts.checked ? '1' : '0', show_cut: showCut.checked ? '1' : '0', ...(SHARE ? { share: SHARE } : {}) });
+          location.href = `api.php?${q}`;
+          closeDialog();
+        } })));
   }
 
   /* ---------- share links: send this cut to someone outside the team ---------- */
@@ -2967,7 +3004,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
-          can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download the recording script for the VO session.' : null)),
+          can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as text or a spreadsheet.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
           'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',
@@ -3066,8 +3103,7 @@
     renderScript();
     setTimeout(() => renderTimeline(), 50);
   });
-  $('dlTxt').addEventListener('click', (e) => { e.preventDefault(); location.href = `api.php?action=script.export&format=txt&version_id=${S.versionId}`; });
-  $('dlCsv').addEventListener('click', (e) => { e.preventDefault(); location.href = `api.php?action=script.export&format=csv&version_id=${S.versionId}`; });
+  $('scriptDl').addEventListener('click', openScriptDownload);
   $('scriptChanges').addEventListener('change', renderScript);
   $('script').addEventListener('wheel', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
   $('script').addEventListener('touchmove', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });

@@ -475,7 +475,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
         <p class="job" id="jobLine" hidden></p>
         <div class="script-modes">
           <button class="btn" type="button" id="scriptWideBtn" aria-pressed="false" title="Current transcript, notes and the new script side by side">Script view</button>
-          <span class="script-dl" id="scriptDl" hidden>Download <a id="dlTxt" href="#">recording script</a> · <a id="dlCsv" href="#">full script (CSV)</a></span>
+          <button type="button" class="btn ghost" id="scriptDl" hidden>Download script…</button>
         </div>
         <div class="filter-row checks">
           <label class="follow"><input type="checkbox" id="scriptFollow" checked> Follow playback</label>

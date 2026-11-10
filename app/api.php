@@ -1069,6 +1069,13 @@ switch ("$method $action") {
             'times' => script_times($vid, $tid, $segs, $lines, (float)version_row($vid)['tc_base'])]);
 
     case 'GET script.export':
+        /*
+         * content: original  the transcript as it is
+         *          merged    the whole new script: new wording in place of the old, added lines where they go,
+         *                    crossed-out lines left out (or marked, with show_cut)
+         *          changes   only what changed (the recording script)
+         * format: txt or csv. drafts=0 leaves draft wording out (merged keeps the original line instead).
+         */
         $vid = int_in($in, 'version_id');
         $v = version_row($vid);
         $t = active_transcript($vid) ?? fail('This version has no transcript.', 404);
@@ -1076,51 +1083,94 @@ switch ("$method $action") {
         $lines = script_lines($vid, (int)$t['id'], $segs);
         $base = (int)$v['tc_base'];
         $times = script_times($vid, (int)$t['id'], $segs, $lines, (float)$base);
-        $tcAt = fn(string $key) => frames_to_tc($times[$key][0] + (int)$v['tc_start'], $base);
+        $tcf = fn(int $f) => frames_to_tc($f + (int)$v['tc_start'], $base);
+        $content = in_array($in['content'] ?? '', ['original', 'merged', 'changes'], true) ? $in['content'] : 'changes';
+        $format = ($in['format'] ?? 'csv') === 'txt' ? 'txt' : 'csv';
+        $drafts = ($in['drafts'] ?? '1') !== '0';
+        $showCut = !empty($in['show_cut']);
         $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
         $fname = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label']);
+        $useNew = fn(?array $l) => $l && ($l['state'] === 'approved' || ($drafts && $l['state'] === 'draft'));
+
+        // Every row: tc, end, speaker, line, kind (same / rewritten / new / crossed out), state, was, by, at.
         $rows = [];
         foreach ($segs as $i => $s) {
             $l = $lines["$i:0"] ?? null;
-            $rows[] = ['tc' => $tcAt("$i:0"), 'speaker' => $s['speaker'], 'current' => $s['text'],
-                'state' => $l['state'] ?? 'same', 'new' => $l && in_array($l['state'], ['draft', 'approved'], true) ? $l['text'] : '', 'by' => $l['by'] ?? '', 'at' => $l['at'] ?? ''];
-            $extra = array_filter($lines, fn($x) => $x['i'] === $i && $x['slot'] > 0 && $x['state'] !== 'removed');
+            [$in0, $out0] = $content === 'original' ? [(int)$s['start'], (int)$s['end']] : $times["$i:0"];
+            $row = ['tc' => $tcf($in0), 'end' => $tcf($out0), 'speaker' => $s['speaker'], 'line' => $s['text'], 'kind' => 'same',
+                'state' => '', 'was' => '', 'by' => '', 'at' => ''];
+            if ($content !== 'original' && $l) {
+                if ($l['state'] === 'cut') {
+                    $row = ['kind' => 'crossed out', 'state' => 'crossed out', 'was' => $s['text'], 'by' => $l['by'], 'at' => $l['at']] + $row;
+                } elseif ($useNew($l)) {
+                    $row = ['line' => $l['text'], 'kind' => 'rewritten', 'state' => $l['state'], 'was' => $s['text'], 'by' => $l['by'], 'at' => $l['at']] + $row;
+                }
+            }
+            $rows[] = $row;
+            if ($content === 'original') {
+                continue;
+            }
+            $extra = array_filter($lines, fn($x) => $x['i'] === $i && $x['slot'] > 0 && $useNew($x));
             usort($extra, fn($a, $b) => $a['slot'] <=> $b['slot']);
             foreach ($extra as $x) {
-                $rows[] = ['tc' => $tcAt("$i:{$x['slot']}"), 'speaker' => $s['speaker'], 'current' => '',
-                    'state' => $x['state'] === 'approved' ? 'approved (new line)' : 'draft (new line)', 'new' => $x['text'], 'by' => $x['by'], 'at' => $x['at']];
+                $k = "$i:{$x['slot']}";
+                $rows[] = ['tc' => $tcf($times[$k][0]), 'end' => $tcf($times[$k][1]), 'speaker' => $s['speaker'], 'line' => $x['text'], 'kind' => 'new',
+                    'state' => $x['state'], 'was' => '', 'by' => $x['by'], 'at' => $x['at']];
             }
         }
-        if (($in['format'] ?? 'csv') === 'txt') {
-            // A recording script: only the lines to record, with where they go.
+        if ($content === 'changes') {
+            $rows = array_values(array_filter($rows, fn($r) => $r['kind'] !== 'same'));
+        } elseif ($content === 'merged' && !$showCut) {
+            $rows = array_values(array_filter($rows, fn($r) => $r['kind'] !== 'crossed out'));
+        }
+        // New and rewritten lines can move on the timeline: keep the file in time order.
+        if ($content !== 'original') {
+            usort($rows, fn($a, $b) => strcmp($a['tc'], $b['tc']));
+        }
+
+        $title = ['original' => 'Original script', 'merged' => 'New script', 'changes' => 'Script changes'][$content];
+        $suffix = ['original' => '_original_script', 'merged' => '_new_script', 'changes' => '_script_changes'][$content];
+        $stamp = gmdate('Y-m-d H:i') . ' UTC';
+        if ($format === 'txt') {
             header('Content-Type: text/plain; charset=utf-8');
-            header('Content-Disposition: attachment; filename="' . $fname . '_new_script.txt"');
-            echo "$film · {$v['label']}\nNew lines to record — exported " . gmdate('Y-m-d H:i') . " UTC\n\n";
-            $n = 0;
-            foreach ($rows as $r) {
-                if ($r['new'] === '' && !str_starts_with($r['state'], 'cut')) {
-                    continue;
-                }
-                $n++;
-                if ($r['state'] === 'cut') {
-                    echo "[{$r['tc']}]  CUT THIS LINE\n    was: {$r['current']}\n\n";
-                    continue;
-                }
-                $mark = str_starts_with($r['state'], 'approved') ? 'APPROVED' : 'DRAFT';
-                echo "[{$r['tc']}]  $mark" . ($r['speaker'] ? "  ({$r['speaker']})" : '') . "\n    {$r['new']}\n" . ($r['current'] !== '' ? "    was: {$r['current']}\n" : "    (new line)\n") . "\n";
+            header('Content-Disposition: attachment; filename="' . $fname . $suffix . '.txt"');
+            echo "$film · {$v['label']}\n$title — exported $stamp\n";
+            if ($content === 'merged') {
+                echo "Changed lines are marked * (new lines +)" . ($drafts ? ', drafts included' : ', approved changes only') . ".\n";
             }
-            if (!$n) {
-                echo "No lines have been changed yet.\n";
+            echo "\n";
+            foreach ($rows as $r) {
+                $who = $r['speaker'] !== '' ? "  ({$r['speaker']})" : '';
+                if ($content === 'changes') {
+                    if ($r['kind'] === 'crossed out') {
+                        echo "[{$r['tc']}]  CROSSED OUT$who\n    was: {$r['was']}\n\n";
+                        continue;
+                    }
+                    $mark = $r['state'] === 'approved' ? 'APPROVED' : 'DRAFT';
+                    echo "[{$r['tc']} – {$r['end']}]  $mark$who\n    {$r['line']}\n" . ($r['was'] !== '' ? "    was: {$r['was']}\n" : "    (new line)\n") . "\n";
+                    continue;
+                }
+                $mark = ['same' => ' ', 'rewritten' => '*', 'new' => '+', 'crossed out' => 'x'][$r['kind']];
+                $line = $r['kind'] === 'crossed out' ? "[crossed out] {$r['was']}" : $r['line'];
+                echo ($content === 'merged' ? "$mark " : '') . "[{$r['tc']}]" . ($r['speaker'] !== '' ? " {$r['speaker']}:" : '') . " $line\n";
+            }
+            if (!$rows) {
+                echo $content === 'changes' ? "No lines have been changed yet.\n" : "The transcript is empty.\n";
             }
             exit;
         }
         header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . $fname . '_script.csv"');
+        header('Content-Disposition: attachment; filename="' . $fname . $suffix . '.csv"');
         $out = fopen('php://output', 'wb');
         fwrite($out, "\xEF\xBB\xBF");
-        fputcsv($out, ['Timecode', 'Speaker', 'Current line', 'Status', 'New line', 'Changed by', 'Changed at'], ',', '"', '');
+        $head = $content === 'original' ? ['Timecode', 'End', 'Speaker', 'Line'] : ['Timecode', 'End', 'Speaker', 'Line', 'Change', 'Status', 'Was', 'Changed by', 'Changed at'];
+        fputcsv($out, $head, ',', '"', '');
         foreach ($rows as $r) {
-            fputcsv($out, [$r['tc'], $r['speaker'], $r['current'], $r['state'], $r['new'], $r['by'], $r['at']], ',', '"', '');
+            $cells = [$r['tc'], $r['end'], $r['speaker'], $r['kind'] === 'crossed out' ? '' : $r['line']];
+            if ($content !== 'original') {
+                $cells = array_merge($cells, [$r['kind'] === 'same' ? '' : $r['kind'], $r['state'], $r['was'], $r['by'], $r['at']]);
+            }
+            fputcsv($out, $cells, ',', '"', '');
         }
         fclose($out);
         exit;
