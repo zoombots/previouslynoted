@@ -936,7 +936,8 @@ body.guest #tally { margin-left: auto; }
 
 /* Download the script */
 .dl-choices { display: grid; gap: 6px; margin: 4px 0 12px; }
-.dl-choices.row { grid-template-columns: 1fr 1fr; }
+.dl-choices.row { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 600px) { .dl-choices.row { grid-template-columns: 1fr; } }
 dialog label.dl-choice { display: flex; gap: 10px; color: var(--text); align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); cursor: pointer; }
 dialog label.dl-choice:has(input:checked) { border-color: var(--text); background: var(--panel-2); }
 dialog label.dl-choice input { width: auto; flex: none; margin-top: 3px; }

@@ -248,10 +248,15 @@ Open the **Transcript** tab and press **Script view**. The sidebar widens; the v
 - **Crossing out from the transcript (editors and admins):** hover a line in the Transcript tab and press **✕** (or click the line and press **X** or **Delete**) to cross it out of the new script; **↺** (or X again) brings it back, and the message that appears has Undo. Crossed-out lines stay in the list struck through; untick **Show crossed-out lines** to hide them. Reviewers, and guests whose share link allows script changes, can take back their own draft suggestions (**Withdraw**, or **Delete line** for a line they added). Those guests can also cross lines out (not approved ones) and restore the lines they crossed out; the line shows who crossed it out.
 - **Download script…** (in the Transcript tab) asks what you want:
   - **Original script:** the transcript as it is, line by line with timecodes.
-  - **Original with the new script in place:** the whole script, with new wording replacing the old line on the same row, added lines where they go, and crossed-out lines left out (or kept and marked, if you tick that). In the text file changed lines are marked `*` and added lines `+`; the spreadsheet has a *Change* column.
+  - **Original with the new script in place:** the whole script, with new wording replacing the old line on the same row, added lines where they go, and crossed-out lines left out (or kept and marked, if you tick that).
   - **Only the script changes:** just the rewritten, added and crossed-out lines, with in and out timecodes, for the VO session.
 
-  Then choose **Text** (to read or print) or **Spreadsheet (CSV)**, and whether drafts count or only approved changes. Timecodes follow the TX track, so moved lines download at their new times.
+  Then choose the file:
+  - **PDF** (the default): changed lines highlighted, rewritten in yellow with what it was underneath, new lines in green, crossed-out lines grey and struck through, each labelled in the margin (and marked *draft* if it isn't approved yet).
+  - **Spreadsheet (CSV):** the first column says what changed (REWRITTEN, NEW, CROSSED OUT), the line itself starts with ★, + or ✕, and the old wording is in *Was*. Spreadsheets can't carry colours, hence the marks.
+  - **Plain text:** changed lines marked `*`, new lines `+`.
+
+  And whether drafts count, or only approved changes. Timecodes follow the TX track, so moved lines download at their new times.
 - **Recorded:** when the next cut (carried from this one) has a transcript, lines whose new wording appears in it are marked **Recorded in …**.
 
 ### Start timecode

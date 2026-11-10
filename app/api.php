@@ -1074,7 +1074,7 @@ switch ("$method $action") {
          *          merged    the whole new script: new wording in place of the old, added lines where they go,
          *                    crossed-out lines left out (or marked, with show_cut)
          *          changes   only what changed (the recording script)
-         * format: txt or csv. drafts=0 leaves draft wording out (merged keeps the original line instead).
+         * format: pdf (changed lines highlighted), csv (a Change column first) or txt. drafts=0 leaves draft wording out (merged keeps the original line instead).
          */
         $vid = int_in($in, 'version_id');
         $v = version_row($vid);
@@ -1085,7 +1085,7 @@ switch ("$method $action") {
         $times = script_times($vid, (int)$t['id'], $segs, $lines, (float)$base);
         $tcf = fn(int $f) => frames_to_tc($f + (int)$v['tc_start'], $base);
         $content = in_array($in['content'] ?? '', ['original', 'merged', 'changes'], true) ? $in['content'] : 'changes';
-        $format = ($in['format'] ?? 'csv') === 'txt' ? 'txt' : 'csv';
+        $format = in_array($in['format'] ?? '', ['pdf', 'csv', 'txt'], true) ? $in['format'] : 'pdf';
         $drafts = ($in['drafts'] ?? '1') !== '0';
         $showCut = !empty($in['show_cut']);
         $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
@@ -1131,6 +1131,15 @@ switch ("$method $action") {
         $title = ['original' => 'Original script', 'merged' => 'New script', 'changes' => 'Script changes'][$content];
         $suffix = ['original' => '_original_script', 'merged' => '_new_script', 'changes' => '_script_changes'][$content];
         $stamp = gmdate('Y-m-d H:i') . ' UTC';
+        if ($format === 'pdf') {
+            require_once __DIR__ . '/lib/pdf.php';
+            $body = script_pdf("$film · {$v['label']}", $title . ($content !== 'original' && !$drafts ? ' (approved changes)' : ''), $stamp, $content, $rows);
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="' . $fname . $suffix . '.pdf"');
+            header('Content-Length: ' . strlen($body));
+            echo $body;
+            exit;
+        }
         if ($format === 'txt') {
             header('Content-Type: text/plain; charset=utf-8');
             header('Content-Disposition: attachment; filename="' . $fname . $suffix . '.txt"');
@@ -1163,14 +1172,19 @@ switch ("$method $action") {
         header('Content-Disposition: attachment; filename="' . $fname . $suffix . '.csv"');
         $out = fopen('php://output', 'wb');
         fwrite($out, "\xEF\xBB\xBF");
-        $head = $content === 'original' ? ['Timecode', 'End', 'Speaker', 'Line'] : ['Timecode', 'End', 'Speaker', 'Line', 'Change', 'Status', 'Was', 'Changed by', 'Changed at'];
+        // Spreadsheets can't carry highlighting, so the change is the first column, in capitals, and the line itself is
+        // marked: ★ rewritten, + new, ✕ crossed out (with the old wording).
+        $head = $content === 'original' ? ['Timecode', 'End', 'Speaker', 'Line'] : ['Change', 'Timecode', 'End', 'Speaker', 'Line', 'Was', 'Status', 'Changed by', 'Changed at'];
         fputcsv($out, $head, ',', '"', '');
+        $mark = ['same' => '', 'rewritten' => '★ ', 'new' => '+ ', 'crossed out' => '✕ '];
         foreach ($rows as $r) {
-            $cells = [$r['tc'], $r['end'], $r['speaker'], $r['kind'] === 'crossed out' ? '' : $r['line']];
-            if ($content !== 'original') {
-                $cells = array_merge($cells, [$r['kind'] === 'same' ? '' : $r['kind'], $r['state'], $r['was'], $r['by'], $r['at']]);
+            if ($content === 'original') {
+                fputcsv($out, [$r['tc'], $r['end'], $r['speaker'], $r['line']], ',', '"', '');
+                continue;
             }
-            fputcsv($out, $cells, ',', '"', '');
+            $line = $r['kind'] === 'crossed out' ? '✕ (crossed out) ' . $r['was'] : $mark[$r['kind']] . $r['line'];
+            fputcsv($out, [$r['kind'] === 'same' ? '' : strtoupper($r['kind']), $r['tc'], $r['end'], $r['speaker'], $line,
+                $r['kind'] === 'rewritten' ? $r['was'] : '', $r['state'], $r['by'], $r['at']], ',', '"', '');
         }
         fclose($out);
         exit;

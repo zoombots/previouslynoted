@@ -2178,7 +2178,9 @@
       pick('dlwhat', 'merged', 'Original with the new script in place', 'The whole script, with new wording replacing the old line on the same row, added lines where they go, and crossed-out lines left out. Changed lines are marked.', true),
       pick('dlwhat', 'changes', 'Only the script changes', `Just the rewritten, added and crossed-out lines (${changed}), for the recording session.`, false));
     const fmt = el('div', { class: 'dl-choices row', role: 'radiogroup', 'aria-label': 'File type' },
-      pick('dlfmt', 'txt', 'Text', 'To read or print.', true), pick('dlfmt', 'csv', 'Spreadsheet (CSV)', 'Excel, Numbers, Google Sheets.', false));
+      pick('dlfmt', 'pdf', 'PDF', 'Changed lines highlighted. To read, print or send.', true),
+      pick('dlfmt', 'csv', 'Spreadsheet (CSV)', 'Excel, Numbers, Google Sheets. Changes marked in the first column.', false),
+      pick('dlfmt', 'txt', 'Plain text', 'Changes marked * and +.', false));
     const drafts = el('input', { type: 'checkbox', checked: true });
     const showCut = el('input', { type: 'checkbox' });
     const cutRow = el('label', { class: 'inline' }, showCut, ' Keep crossed-out lines, marked as crossed out');
@@ -3004,7 +3006,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
-          can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as text or a spreadsheet.' : null)),
+          can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as a PDF with the changes highlighted, a spreadsheet or plain text.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
           'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',

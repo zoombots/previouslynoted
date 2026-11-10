@@ -32,13 +32,14 @@ const check = (ok, msg) => { if (!ok) fails.push(msg); };
   await page.click('#tabScript');
   await page.click('#scriptDl');
   await page.waitForSelector('#dlg h2:has-text("Download the script")');
-  check(await page.locator('#dlg .dl-choice').count() === 5, 'three content choices and two file types');
+  check(await page.locator('#dlg .dl-choice').count() === 6, 'three content choices and two file types');
   await page.screenshot({ path: '/tmp/claude-0/pn-share-shots/script-download.png' });
   const get = async (content, format, extra = {}) => page.evaluate(async ([v, c, f, x]) => {
     const q = new URLSearchParams({ action: 'script.export', version_id: v, content: c, format: f, ...x });
     return (await fetch('api.php?' + q)).text();
   }, [setup.v, content, format, extra]);
   const orig = await get('original', 'txt');
+  // Leave the test lines in place until the PDFs are made (cleanup is at the end).
   check(orig.includes(setup.tr[0]) && orig.includes(setup.tr[1]) && !orig.includes('DLTEST'), 'original: transcript only');
   const merged = await get('merged', 'txt');
   check(merged.includes('* [') && merged.includes('DLTEST rewritten line ten') && !merged.includes(setup.tr[0]), 'merged: new wording replaces the line');
@@ -50,9 +51,21 @@ const check = (ok, msg) => { if (!ok) fails.push(msg); };
   const changes = await get('changes', 'txt');
   check(changes.includes('DLTEST rewritten') && changes.includes('CROSSED OUT') && changes.includes('DLTEST added') && !changes.includes(setup.tr[2] + '\n'), 'changes only');
   const csv = await get('merged', 'csv');
-  check(csv.split('\n')[0].includes('Change') && csv.includes('rewritten') && csv.includes('new'), 'merged CSV has a Change column');
+  check(csv.split('\n')[0].replace('\ufeff', '').startsWith('Change,') && csv.includes('REWRITTEN,') && csv.includes('NEW,') && csv.includes('★ DLTEST rewritten'), 'merged CSV marks changes');
+  // PDFs of each kind, saved for a look.
+  for (const c of ['original', 'merged', 'changes']) {
+    const b64 = await page.evaluate(async ([v, c]) => {
+      const r = await fetch('api.php?' + new URLSearchParams({ action: 'script.export', version_id: v, content: c, format: 'pdf', show_cut: '1' }));
+      const buf = new Uint8Array(await r.arrayBuffer());
+      let s = ''; for (const x of buf) s += String.fromCharCode(x);
+      return [r.headers.get('content-type'), btoa(s)];
+    }, [setup.v, c]);
+    check(b64[0] === 'application/pdf', 'PDF content type');
+    require('fs').writeFileSync(`/tmp/claude-0/pn-share-shots/script-${c}.pdf`, Buffer.from(b64[1], 'base64'));
+  }
   // Download through the dialog.
   await page.locator('#dlg .dl-choice', { hasText: 'Only the script changes' }).click();
+  check(await page.locator('#dlg input[name=dlfmt][value=pdf]').isChecked(), 'PDF is the default');
   await page.locator('#dlg .dl-choice', { hasText: 'Spreadsheet' }).click();
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#dlg button.primary')]);
   check(/_script_changes\.csv$/.test(dl.suggestedFilename()), 'dialog downloads the chosen file: ' + dl.suggestedFilename());
