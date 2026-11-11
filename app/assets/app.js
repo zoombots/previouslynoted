@@ -557,6 +557,8 @@
     checkJob(vid);
   }
 
+  // Jobs this page has seen running: when one finishes, its transcript is loaded however long it took.
+  const watchedJobs = new Set();
   async function checkJob(vid) {
     clearTimeout(S.jobTimer);
     const line = $('jobLine');
@@ -570,16 +572,19 @@
       line.className = 'job running';
       line.textContent = `${job.message || 'Waiting to start…'} ${fmtClock(age)}`;
       $('transcribeBtn').disabled = true;
+      watchedJobs.add(job.id);
       S.jobTimer = setTimeout(() => checkJob(vid), 4000);
       return;
     }
     $('transcribeBtn').disabled = false;
-    const recent = age < 120;
+    // Fresh: this page watched it run (a long cut can take several minutes), or it finished in the last two minutes.
+    const fresh = watchedJobs.has(job.id) || age < 120;
+    watchedJobs.delete(job.id);
     if (job.status === 'done') {
-      line.hidden = !recent;
+      line.hidden = !fresh;
       line.className = 'job done';
       line.textContent = `Transcribed: ${job.message}`;
-      if (recent && S.script.latestId !== job.result?.transcript_id) {
+      if (fresh && S.script.latestId !== job.result?.transcript_id) {
         await loadScript();
         await refreshKeepPlace();
         toast(`Transcript ready: ${job.result?.segments} lines.` + placementSummary(job.result?.placement, vid));
