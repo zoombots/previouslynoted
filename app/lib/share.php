@@ -30,6 +30,20 @@ function share_allows(array $share, string $action): bool
     };
 }
 
+/**
+ * The versions a guest may open: the shared one, and with show_older the film's versions made before it
+ * (oldest first). What the link allows (notes, script) applies to each of them.
+ */
+function share_version_ids(array $share): array
+{
+    if (!(int)($share['show_older'] ?? 0)) {
+        return [(int)$share['version_id']];
+    }
+    $st = db()->prepare('SELECT id FROM versions WHERE film_id = ? AND id <= ? ORDER BY id');
+    $st->execute([(int)$share['film_id'], (int)$share['version_id']]);
+    return array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
+}
+
 /** A link that still works, or null. */
 function share_by_token(string $token): ?array
 {
@@ -70,7 +84,7 @@ function guest_account(array $share, string $name): array
 function share_public(array $s): array
 {
     return ['id' => (int)$s['id'], 'link' => app_base_url() . '?share=' . $s['token'], 'view' => $s['view'], 'can_comment' => (bool)$s['can_comment'],
-        'can_script' => (bool)(int)($s['can_script'] ?? 0), 'label' => $s['label'], 'created_by' => $s['created_by'], 'created_at' => $s['created_at'],
+        'can_script' => (bool)(int)($s['can_script'] ?? 0), 'show_older' => (bool)(int)($s['show_older'] ?? 0), 'label' => $s['label'], 'created_by' => $s['created_by'], 'created_at' => $s['created_at'],
         'expires_at' => $s['expires_at'] ? gmdate('Y-m-d\TH:i:s\Z', (int)$s['expires_at']) : null,
         'last_used_at' => $s['last_used_at'], 'uses' => (int)$s['uses']];
 }

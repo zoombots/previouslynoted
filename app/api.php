@@ -129,21 +129,23 @@ if ($share) {
     if (!share_allows($share, $action)) {
         fail($action === 'script.edit' ? 'This link doesn’t let you suggest script changes.' : 'This link is for watching; it doesn’t let you add notes.', 403);
     }
-    $sv = (int)$share['version_id'];
+    $shared = share_version_ids($share);
+    $inList = implode(',', $shared);
     $gone = 'That isn’t part of what was shared with you.';
-    if ((isset($in['version_id']) && (int)$in['version_id'] !== $sv) || (isset($in['film_id']) && (int)$in['film_id'] !== (int)$share['film_id'])) {
+    if ((isset($in['version_id']) && !in_array((int)$in['version_id'], $shared, true)) || (isset($in['film_id']) && (int)$in['film_id'] !== (int)$share['film_id'])) {
         fail($gone, 404);
     }
     if (isset($in['note_id'])) {
-        $chk = db()->prepare('SELECT 1 FROM positions WHERE note_id = ? AND version_id = ?');
-        $chk->execute([(int)$in['note_id'], $sv]);
+        // The note must be on the version asked about (or, without one, on a version they can see).
+        $chk = db()->prepare('SELECT 1 FROM positions WHERE note_id = ? AND version_id ' . (isset($in['version_id']) ? '= ' . (int)$in['version_id'] : "IN ($inList)"));
+        $chk->execute([(int)$in['note_id']]);
         if (!$chk->fetchColumn()) {
             fail($gone, 404);
         }
     }
     if (isset($in['transcript_id']) && $in['transcript_id'] !== '') {
-        $chk = db()->prepare('SELECT 1 FROM transcripts WHERE id = ? AND version_id = ?');
-        $chk->execute([(int)$in['transcript_id'], $sv]);
+        $chk = db()->prepare("SELECT 1 FROM transcripts WHERE id = ? AND version_id IN ($inList)");
+        $chk->execute([(int)$in['transcript_id']]);
         if (!$chk->fetchColumn()) {
             fail($gone, 404);
         }
@@ -269,7 +271,7 @@ switch ("$method $action") {
 
     case 'GET state':
         // A guest gets only the shared film and version.
-        $only = $share ? ' WHERE v.id = ' . (int)$share['version_id'] : '';
+        $only = $share ? ' WHERE v.id IN (' . implode(',', share_version_ids($share)) . ')' : '';
         $versions = $pdo->query(
             'SELECT v.id, v.film_id, v.label, v.color, v.tc_base, v.tc_start, v.rate, v.frameio_url, v.video_url, v.carried_from,
                     v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id,
@@ -329,8 +331,8 @@ switch ("$method $action") {
         $view = isset(SHARE_VIEWS[$in['view'] ?? '']) ? $in['view'] : 'review';
         $days = (int)($in['days'] ?? 0);
         $token = bin2hex(random_bytes(20));
-        $pdo->prepare('INSERT INTO shares (token, film_id, version_id, view, can_comment, can_script, label, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-            ->execute([$token, $v['film_id'], $vid, $view, !empty($in['can_comment']) ? 1 : 0, !empty($in['can_script']) ? 1 : 0, mb_substr(trim((string)($in['label'] ?? '')), 0, 80),
+        $pdo->prepare('INSERT INTO shares (token, film_id, version_id, view, can_comment, can_script, show_older, label, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$token, $v['film_id'], $vid, $view, !empty($in['can_comment']) ? 1 : 0, !empty($in['can_script']) ? 1 : 0, !empty($in['show_older']) ? 1 : 0, mb_substr(trim((string)($in['label'] ?? '')), 0, 80),
                 $user, now_iso(), $days > 0 ? time() + min($days, 365) * 86400 : null]);
         $st = $pdo->prepare('SELECT * FROM shares WHERE id = ?');
         $st->execute([(int)$pdo->lastInsertId()]);

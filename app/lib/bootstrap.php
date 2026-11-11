@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.16');
+define('APP_VERSION', '0.7.17');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -339,6 +339,10 @@ SQL);
         transcript_id INTEGER, seg_idx INTEGER NOT NULL, seg_norm TEXT NOT NULL DEFAULT \'\', slot INTEGER NOT NULL DEFAULT 0,
         start_frame INTEGER NOT NULL, end_frame INTEGER NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS script_times_v ON script_times(version_id, id)');
+    // 0.7.17: links that also show the film's earlier versions.
+    if (!in_array('show_older', array_column($pdo->query('PRAGMA table_info(shares)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE shares ADD COLUMN show_older INTEGER NOT NULL DEFAULT 0');
+    }
     // 0.7.10: links that let the guest suggest script wording.
     if (!in_array('can_script', array_column($pdo->query('PRAGMA table_info(shares)')->fetchAll(), 'name'), true)) {
         $pdo->exec('ALTER TABLE shares ADD COLUMN can_script INTEGER NOT NULL DEFAULT 0');

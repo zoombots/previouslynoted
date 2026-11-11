@@ -182,7 +182,8 @@
     if (!S.films.some((f) => f.id === film)) film = S.films[0]?.id ?? null;
     S.filmId = film;
     const vs = filmVersions();
-    let ver = prefer.versionId ?? num(hash.get('v')) ?? num(ls.get('version'));
+    // A guest starts on the version the link was made for (it may also show earlier ones).
+    let ver = prefer.versionId ?? num(hash.get('v')) ?? (SHARE ? num(document.body.dataset.shareVersion) : num(ls.get('version')));
     if (!vs.some((v) => v.id === ver)) ver = vs[vs.length - 1]?.id ?? null;
     renderPickers();
     await selectVersion(ver);
@@ -2224,6 +2225,8 @@
     const viewSel = el('select', {}, ...Object.entries(VIEW_NAMES).map(([k, t]) => el('option', { value: k, text: t, selected: k === view })));
     const comment = el('input', { type: 'checkbox', checked: true });
     const scriptOk = el('input', { type: 'checkbox' });
+    const older = el('input', { type: 'checkbox' });
+    const nOlder = filmVersions().filter((x) => x.id < v.id).length;
     const days = el('select', {}, el('option', { value: '7', text: 'for 7 days' }), el('option', { value: '30', text: 'for 30 days', selected: true }),
       el('option', { value: '0', text: 'until I turn it off' }));
     const label = el('input', { maxlength: 80, placeholder: 'Who it’s for (optional), e.g. Broadcaster' });
@@ -2231,7 +2234,8 @@
     const row = (sh) => el('li', { class: 'prow' + (fresh === sh.id ? ' fresh' : '') },
       el('div', { class: 'prow-who' },
         el('strong', { text: (sh.label || 'Share link') + ` · ${VIEW_NAMES[sh.view]}`
-          + (sh.can_comment || sh.can_script ? ', can ' + [sh.can_comment && 'add notes', sh.can_script && 'suggest script changes'].filter(Boolean).join(' and ') : ', watch only') }),
+          + (sh.can_comment || sh.can_script ? ', can ' + [sh.can_comment && 'add notes', sh.can_script && 'suggest script changes'].filter(Boolean).join(' and ') : ', watch only')
+          + (sh.show_older ? ' · with earlier versions' : '') }),
         el('small', { text: `Made by ${sh.created_by} ${fmtDate(sh.created_at)}` + (sh.expires_at ? ` · works until ${fmtDate(sh.expires_at)}` : '')
           + (sh.uses ? ` · opened ${sh.uses}×` : ' · not opened yet') + (sh.guests.length ? ` · notes from ${sh.guests.join(', ')}` : '') }),
         el('div', { class: 'copyrow two' }, el('code', { text: sh.link }),
@@ -2246,7 +2250,7 @@
       el('form', { class: 'invite', onsubmit: async (e) => {
         e.preventDefault();
         try {
-          const r = await api('share.create', { body: { version_id: v.id, view: viewSel.value, can_comment: comment.checked, can_script: scriptOk.checked, days: +days.value, label: label.value } });
+          const r = await api('share.create', { body: { version_id: v.id, view: viewSel.value, can_comment: comment.checked, can_script: scriptOk.checked, show_older: older.checked, days: +days.value, label: label.value } });
           copy(r.share.link);
           openShare(r.share.id);
         } catch (err) { fail(err); }
@@ -2255,6 +2259,7 @@
           el('label', {}, 'They see', viewSel), el('label', {}, 'Link works', days), el('label', {}, 'Label', label)),
         el('label', { class: 'inline' }, comment, ' They can add notes and replies'),
         el('label', { class: 'inline' }, scriptOk, ' They can suggest script changes (as drafts the team approves)'),
+        nOlder ? el('label', { class: 'inline' }, older, ` They can also open the ${nOlder} earlier version${nOlder === 1 ? '' : 's'} of this film`) : null,
         el('div', { class: 'dlg-actions' },
           el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: closeDialog }),
           el('button', { class: 'btn primary', text: 'Make a link and copy it' }))),
@@ -3014,7 +3019,7 @@
           can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as a PDF with the changes highlighted, a spreadsheet or plain text.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
-          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',
+          'Share (top bar) sends this cut to someone outside the team: they type their name and see only this version, in the view you pick. You choose whether they can add notes, whether they can also open the film’s earlier versions, and whether they can change the script (suggest wording as drafts you approve, cross lines out, delete lines they added). Their notes carry a guest chip.',
           'Tracks… (next to Add note here) adds, renames, recolours and reorders tracks. Comments that start with a track’s code, like “M:” or “ARCH-001”, land on that track; Find tracks in the notes makes tracks from the codes your notes use.',
           'Notes out, on each version: Markers… downloads a marker file for Avid, Resolve or Premiere at the version’s timecode; Post to Frame.io… adds the notes as comments on the linked Frame.io file.')) : null,
       can('admin') ? sec('Admin', false,

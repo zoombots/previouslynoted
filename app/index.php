@@ -271,7 +271,8 @@ if (isset($_GET['share'])) {
         $what = SHARE_VIEWS[$share['view']] ?? 'Review';
         gate_page($share['film_name'] . ' · ' . $cfg['app_name'], $share['film_name'] . ' · ' . $share['version_label'],
             'You’ve been sent this cut to ' . ((int)$share['can_comment'] ? 'watch and leave notes on' : 'watch with the team’s notes')
-            . ((int)$share['can_script'] ? ', and to suggest changes to the script' : '') . '. '
+            . ((int)$share['can_script'] ? ', and to suggest changes to the script' : '')
+            . ((int)$share['show_older'] ? '. You can also look back at the earlier versions of the film' : '') . '. '
             . ((int)$share['can_comment'] || (int)$share['can_script'] ? 'What’s your name? It goes on everything you add, so the team knows who wrote it.' : 'What’s your name?'),
             $error, function () use ($share) { ?>
   <form method="post" autocomplete="off">
@@ -317,7 +318,7 @@ if (!$share && !current_account()) {
 $me = $share ? guest_account($share, share_guest_name($share)) : current_account();
 page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg['app_name']); ?>
 <body class="app<?= $share ? ' guest' : '' ?>" data-csrf="<?= h($_SESSION['csrf']) ?>" data-role="<?= h($me['role']) ?>" data-uid="<?= (int)$me['id'] ?>"<?php if ($share): ?>
-  data-share="<?= h($share['token']) ?>" data-share-view="<?= h($share['view']) ?>"<?= (int)$share['can_comment'] ? ' data-share-comment=""' : '' ?><?= (int)$share['can_script'] ? ' data-share-script=""' : '' ?><?php endif; ?>>
+  data-share="<?= h($share['token']) ?>" data-share-version="<?= (int)$share['version_id'] ?>" data-share-view="<?= h($share['view']) ?>"<?= (int)$share['can_comment'] ? ' data-share-comment=""' : '' ?><?= (int)$share['can_script'] ? ' data-share-script=""' : '' ?><?php endif; ?>>
 <a class="skip" href="#notes">Skip to the notes list</a>
 <header class="top">
   <h1 class="sr-only"><?= h($cfg['app_name']) ?></h1>
