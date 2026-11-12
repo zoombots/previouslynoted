@@ -945,3 +945,22 @@ dialog label.dl-choice input { width: auto; flex: none; margin-top: 3px; }
 .dl-choice small { color: var(--muted); font-size: 12.5px; line-height: 1.4; }
 .dl-opts { display: grid; gap: 4px; margin: -4px 0 8px; }
 .dl-opts[hidden], .dl-opts label[hidden] { display: none; }
+
+/* Voice-over */
+.vo-voices { display: grid; gap: 8px; margin-bottom: 10px; }
+.vo-voice-row { display: flex; gap: 6px; }
+.vo-voice-row select { flex: 1; min-width: 0; }
+.dl-choices.row.two { grid-template-columns: 1fr 1fr; }
+.vo-progress .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 10px 0 4px; }
+.vo-progress .bar span { display: block; height: 100%; width: 0; background: var(--st-approved); transition: width .2s; }
+.vo-progress.err .bar span { background: var(--danger); }
+.vo-progress.err p { color: var(--danger); }
+ol.vo-lines { list-style: none; margin: 8px 0 0; padding: 0; max-height: 15rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-s); }
+ol.vo-lines:empty { display: none; }
+.vo-line { display: grid; grid-template-columns: 6.5rem 1fr 2.2rem; gap: 8px; align-items: start; padding: 5px 8px; border-top: 1px solid var(--line); font-size: 13px; }
+.vo-line:first-child { border-top: 0; }
+.vo-line .tc { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding-top: 2px; }
+.vo-line.done .tc { color: var(--st-approved); }
+.vo-line.err { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.vo-play { padding: 0 6px; min-height: 0; height: 24px; }
+.vo-state { color: var(--muted); text-align: center; }

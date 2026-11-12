@@ -10,6 +10,7 @@ require __DIR__ . '/lib/connect.php';
 require __DIR__ . '/lib/script.php';
 require __DIR__ . '/lib/mail.php';
 require __DIR__ . '/lib/export.php';
+require __DIR__ . '/lib/vo.php';
 
 security_headers();
 
@@ -1189,6 +1190,113 @@ switch ("$method $action") {
                 $r['kind'] === 'rewritten' ? $r['was'] : '', $r['state'], $r['by'], $r['at']], ',', '"', '');
         }
         fclose($out);
+        exit;
+
+    /* ---------------- New voice-over with ElevenLabs (lib/vo.php) ---------------- */
+    case 'GET vo.voices':
+        json_out(el_voices());
+
+    case 'GET vo.plan':
+        // The lines that would be voiced, so the dialog can show what it'll cost before anything is made.
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        $t = active_transcript($vid) ?? fail('This version has no transcript yet.', 404);
+        $plan = vo_lines($vid, $t, ($in['scope'] ?? 'changes') === 'all' ? 'all' : 'changes', ($in['drafts'] ?? '1') !== '0');
+        $speakers = array_values(array_unique(array_map(fn($l) => $l['speaker'], $plan)));
+        json_out(['lines' => $plan, 'speakers' => $speakers, 'characters' => array_sum(array_map(fn($l) => mb_strlen($l['text']), $plan)),
+            'transcript_id' => (int)$t['id'], 'formats' => array_map(fn($f) => $f['label'], VO_FORMATS)]);
+
+    case 'POST vo.line':
+        // Voice one line (or reuse the take if this exact line was already made with these settings).
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        $t = active_transcript($vid) ?? fail('This version has no transcript yet.', 404);
+        $plan = vo_lines($vid, $t, ($in['scope'] ?? 'changes') === 'all' ? 'all' : 'changes', ($in['drafts'] ?? '1') !== '0');
+        $key = (string)($in['key'] ?? '');
+        $at = null;
+        foreach ($plan as $n => $l) {
+            if ($l['key'] === $key) {
+                $at = $n;
+            }
+        }
+        if ($at === null) {
+            fail('That line has changed since the list was made. Close the dialog and open it again.', 409);
+        }
+        $line = $plan[$at];
+        $set = vo_settings($in);
+        $voices = is_array($in['voices'] ?? null) ? $in['voices'] : [];
+        $take = vo_make_take($vid, $line, vo_voice_for($voices, $line['speaker']), $set,
+            ['previous' => $plan[$at - 1]['text'] ?? '', 'next' => $plan[$at + 1]['text'] ?? ''], $user);
+        json_out(['ok' => true, 'key' => $key] + $take);
+
+    case 'GET vo.take':
+        // Listen to a take.
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        $hash = (string)($in['hash'] ?? '');
+        $format = isset(VO_FORMATS[$in['format'] ?? '']) ? $in['format'] : 'wav';
+        $file = preg_match('/^[0-9a-f]{32}$/', $hash) ? vo_file($vid, $hash, $format) : '';
+        if ($file === '' || !is_file($file)) {
+            fail('That take isn’t on the server any more.', 404);
+        }
+        header('Content-Type: ' . ($format === 'wav' ? 'audio/wav' : 'audio/mpeg'));
+        header('Content-Length: ' . filesize($file));
+        header('Cache-Control: private, max-age=86400');
+        readfile($file);
+        exit;
+
+    case 'GET vo.export':
+        // A zip of every take, named in script order, and the FCP7 XML that places them.
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        $t = active_transcript($vid) ?? fail('This version has no transcript yet.', 404);
+        $scope = ($in['scope'] ?? 'changes') === 'all' ? 'all' : 'changes';
+        $plan = vo_lines($vid, $t, $scope, ($in['drafts'] ?? '1') !== '0');
+        $set = vo_settings($in);
+        $voices = json_decode((string)($in['voices'] ?? '{}'), true) ?: [];
+        if (!class_exists('ZipArchive')) {
+            fail('The PHP zip extension is off. Turn it on in cPanel → Select PHP Version → Extensions.', 500);
+        }
+        $ext = VO_FORMATS[$set['format']]['ext'];
+        $clips = [];
+        $missing = 0;
+        foreach ($plan as $line) {
+            $file = vo_file($vid, vo_hash($line['text'], vo_voice_for($voices, $line['speaker']), $set), $set['format']);
+            if (!is_file($file)) {
+                $missing++;
+                continue;
+            }
+            $clips[] = [$line, vo_clip_name($line, frames_to_tc($line['start'] + (int)$v['tc_start'], (int)$v['tc_base']), $ext), vo_duration($file, $set['format']), $file];
+        }
+        if ($missing) {
+            fail("$missing line" . ($missing === 1 ? ' hasn’t' : 's haven’t') . ' been voiced with these settings yet. Press Make the voice-over first.', 409);
+        }
+        if (!$clips) {
+            fail('There are no lines to voice. Approve some script changes first, or choose the whole script.');
+        }
+        $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
+        $base = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label']) . '_VO' . ($scope === 'changes' ? '_changes' : '');
+        $xml = vo_fcp7_xml("$film · {$v['label']} · new VO" . ($scope === 'changes' ? ' (changes)' : ''), $v, array_map(fn($c) => array_slice($c, 0, 3), $clips), $set['format'], (string)($in['folder'] ?? ''));
+        $list = "$film · {$v['label']} · new voice-over\nMade " . gmdate('Y-m-d H:i') . " UTC with ElevenLabs ({$set['model']}).\n\n";
+        foreach ($clips as [$line, $name, $secs]) {
+            $list .= sprintf("%s  %s  %5.1fs  %s%s\n    %s\n\n", $name, frames_to_tc($line['start'] + (int)$v['tc_start'], (int)$v['tc_base']), $secs,
+                $line['speaker'] !== '' ? $line['speaker'] : '', $line['kind'] === 'new' ? ' (new line)' : ($line['kind'] === 'rewritten' ? ' (rewritten)' : ''), $line['text']);
+        }
+        $tmp = tempnam(sys_get_temp_dir(), 'pnvo');
+        $zip = new ZipArchive();
+        $zip->open($tmp, ZipArchive::OVERWRITE);
+        $zip->addFromString("$base/$base.xml", $xml);
+        $zip->addFromString("$base/lines.txt", $list);
+        foreach ($clips as [$line, $name, $secs, $file]) {
+            $zip->addFile($file, "$base/clips/$name");
+            $zip->setCompressionName("$base/clips/$name", ZipArchive::CM_STORE);   // audio doesn't compress; store it
+        }
+        $zip->close();
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $base . '.zip"');
+        header('Content-Length: ' . filesize($tmp));
+        readfile($tmp);
+        @unlink($tmp);
         exit;
 
     /* ---------------- Tracks (note categories) ---------------- */

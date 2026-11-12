@@ -1809,6 +1809,7 @@
     if (!sc.uploads.length && can('editor')) $('scriptSetup').open = true;
     $('scriptWideBtn').hidden = !sc.segments.length;
     $('scriptDl').hidden = !sc.segments.length || !S.scriptEdits.transcriptId;
+    $('voBtn').hidden = $('scriptDl').hidden || !can('editor') || !!SHARE;
     if (!sc.segments.length) { ol.replaceChildren(); $('caption').hidden = true; return; }
     const keepScroll = ol.scrollTop;
     const rows = [];
@@ -2220,6 +2221,160 @@
           location.href = `api.php?${q}`;
           closeDialog();
         } })));
+  }
+
+  /* ---------- new voice-over with ElevenLabs: clips and an FCP7 XML ---------- */
+  async function openVoiceOver() {
+    if (!S.conn.elevenlabs) {
+      showDialog({ lightDismiss: true }, el('h2', { text: 'Voice-over' }),
+        el('p', { text: 'Connect ElevenLabs first: your name’s menu → Settings and connections → ElevenLabs. The same API key makes transcripts and voice-over.' }),
+        el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn primary', text: 'OK', onclick: closeDialog })));
+      return;
+    }
+    const vid = S.versionId;
+    const memKey = 'vo:' + S.filmId;
+    let mem = {};
+    try { mem = JSON.parse(ls.get(memKey) || '{}'); } catch { mem = {}; }
+    showDialog(el('h2', { text: 'Voice-over' }), el('p', { class: 'small', text: 'Getting your ElevenLabs voices…' }));
+    let lib;
+    try { lib = await api('vo.voices'); } catch (e) { closeDialog(); throw e; }
+    if (!lib.voices.length) {
+      showDialog({ lightDismiss: true }, el('h2', { text: 'Voice-over' }), el('p', { text: 'There are no voices on this ElevenLabs account yet. Add one in ElevenLabs (Voices), then try again.' }));
+      return;
+    }
+    const opt = (list, value) => list.map((x) => el('option', { value: x.id, text: x.name + (x.about ? ` · ${x.about}` : ''), selected: x.id === value }));
+    const radio = (name, value, title, desc, checked) => el('label', { class: 'dl-choice' },
+      el('input', { type: 'radio', name, value, checked }), el('span', {}, el('strong', { text: title }), desc ? el('small', { text: desc }) : null));
+    const scope = el('div', { class: 'dl-choices', role: 'radiogroup', 'aria-label': 'What to voice' },
+      radio('voscope', 'changes', 'Only the script changes', 'Rewritten and added lines. Clips line up with the original VO on the timeline.', (mem.scope || 'changes') === 'changes'),
+      radio('voscope', 'all', 'The whole new script', 'Every line, with the new wording in place and crossed-out lines left out.', mem.scope === 'all'));
+    const drafts = el('input', { type: 'checkbox', checked: mem.drafts ?? false });
+    const model = el('select', {}, ...opt(lib.models, mem.model || 'eleven_multilingual_v2'));
+    const speed = el('select', {}, ...[['0.9', 'A little slower'], ['1', 'Normal'], ['1.1', 'A little faster']]
+      .map(([v, t]) => el('option', { value: v, text: t, selected: String(mem.speed ?? '1') === v })));
+    const format = el('div', { class: 'dl-choices row two', role: 'radiogroup', 'aria-label': 'Audio files' },
+      radio('vofmt', 'wav', 'WAV 48 kHz', 'For the edit. Needs an ElevenLabs Pro plan or above.', (mem.format || 'wav') === 'wav'),
+      radio('vofmt', 'mp3', 'MP3 44.1 kHz', 'Works on every plan. Fine for a temp track.', mem.format === 'mp3'));
+    const folder = el('input', { value: mem.folder || '', placeholder: 'e.g. /Users/you/Film/VO (optional)', spellcheck: false });
+    const voiceBox = el('div', { class: 'vo-voices' });
+    const summary = el('p', { class: 'small' });
+    const progress = el('div', { class: 'vo-progress', hidden: true }, el('div', { class: 'bar' }, el('span')), el('p', { class: 'small' }));
+    const list = el('ol', { class: 'vo-lines' });
+    const makeBtn = el('button', { type: 'button', class: 'btn primary', text: 'Make the voice-over' });
+    const dlBtn = el('button', { type: 'button', class: 'btn', text: 'Download clips and XML', disabled: true });
+    const stopBtn = el('button', { type: 'button', class: 'btn ghost', text: 'Stop', hidden: true });
+    const voiceSel = {};
+    let plan = null, running = false, stop = false;
+    const takes = new Map();   // line key → { hash, duration }
+    const current = () => ({
+      scope: scope.querySelector('input:checked').value, drafts: drafts.checked, model: model.value, speed: speed.value,
+      format: format.querySelector('input:checked').value, folder: folder.value.trim(),
+      voices: Object.fromEntries(Object.entries(voiceSel).map(([k, s]) => [k, s.value])),
+    });
+    const remember = () => { const c = current(); ls.set(memKey, JSON.stringify(c)); return c; };
+    const fmtSecs = (s) => `${s.toFixed(1)}s`;
+    const renderList = () => {
+      list.replaceChildren(...plan.lines.map((l) => {
+        const t = takes.get(l.key);
+        return el('li', { class: 'vo-line' + (t ? ' done' : '') + (t?.error ? ' err' : ''), 'data-key': l.key },
+          el('span', { class: 'tc', text: tc(l.start) }),
+          el('span', { class: 'vo-text' }, l.speaker ? el('b', { text: l.speaker + ' ' }) : null, l.text,
+            l.kind !== 'same' ? el('span', { class: 'guest-chip', text: l.kind === 'new' ? 'new' : 'rewritten' }) : null),
+          t?.hash ? el('button', { type: 'button', class: 'btn ghost vo-play', title: `Play this take (${fmtSecs(t.duration)})`, text: '▶',
+            onclick: () => { const a = new Audio(wsTake(t.hash)); a.play().catch(() => toast('The browser wouldn’t play it.')); } })
+            : el('span', { class: 'vo-state', text: t?.error ? 'failed' : running ? '…' : '' }));
+      }));
+    };
+    const wsTake = (hash) => `api.php?${new URLSearchParams({ action: 'vo.take', version_id: vid, hash, format: current().format })}`;
+    const renderVoices = () => {
+      const speakers = plan.speakers.length ? plan.speakers : [''];
+      const keys = speakers.length === 1 ? ['*'] : speakers;
+      voiceBox.replaceChildren(...keys.map((k) => {
+        const s = voiceSel[k] || el('select', { onchange: () => { takes.clear(); renderList(); dlBtn.disabled = true; } },
+          ...opt(lib.voices, mem.voices?.[k] || mem.voices?.['*'] || lib.voices[0].id));
+        voiceSel[k] = s;
+        const pre = () => lib.voices.find((x) => x.id === s.value)?.preview;
+        return el('label', {}, k === '*' ? 'Voice' : `Voice for ${k || 'unnamed speaker'}`,
+          el('span', { class: 'vo-voice-row' }, s, el('button', { type: 'button', class: 'btn ghost', text: '▶', title: 'Hear this voice',
+            onclick: () => { const u = pre(); if (u) new Audio(u).play().catch(() => {}); else toast('ElevenLabs has no sample for this voice.'); } })));
+      }));
+      for (const k of Object.keys(voiceSel)) if (!keys.includes(k)) delete voiceSel[k];
+    };
+    const loadPlan = async () => {
+      const c = current();
+      plan = await api('vo.plan', { query: { version_id: vid, scope: c.scope, drafts: c.drafts ? '1' : '0' } });
+      takes.clear();
+      summary.textContent = plan.lines.length
+        ? `${plan.lines.length} line${plan.lines.length === 1 ? '' : 's'} · ${plan.characters.toLocaleString()} characters. ElevenLabs charges by the character; lines already made with the same settings are reused, not charged again.`
+        : (c.scope === 'changes' ? 'No script changes to voice yet. Approve some rewritten or added lines (or include drafts), or choose the whole script.' : 'The script is empty.');
+      makeBtn.disabled = !plan.lines.length;
+      dlBtn.disabled = true;
+      renderVoices();
+      renderList();
+    };
+    // Changing anything that affects the sound means the takes have to be made (or found) again.
+    for (const x of [scope, drafts]) x.addEventListener('change', () => loadPlan().catch(fail));
+    for (const x of [model, speed, format]) x.addEventListener('change', () => { takes.clear(); renderList(); dlBtn.disabled = true; });
+    makeBtn.addEventListener('click', async () => {
+      const c = remember();
+      running = true; stop = false;
+      makeBtn.disabled = true; stopBtn.hidden = false; progress.hidden = false;
+      const bar = progress.querySelector('.bar span'), note = progress.querySelector('p');
+      let done = 0, made = 0, reused = 0, failed = null;
+      renderList();
+      for (const l of plan.lines) {
+        if (stop) break;
+        note.textContent = `Voicing ${done + 1} of ${plan.lines.length}: ${l.text.slice(0, 60)}${l.text.length > 60 ? '…' : ''}`;
+        try {
+          const r = await api('vo.line', { body: { version_id: vid, key: l.key, scope: c.scope, drafts: c.drafts ? '1' : '0', voices: c.voices,
+            model: c.model, speed: c.speed, format: c.format } });
+          takes.set(l.key, { hash: r.hash, duration: r.duration });
+          if (r.cached) reused++; else made++;
+        } catch (e) {
+          takes.set(l.key, { error: e.message });
+          failed = e.message;
+          break;
+        }
+        done++;
+        bar.style.width = `${Math.round((done / plan.lines.length) * 100)}%`;
+        renderList();
+      }
+      running = false;
+      stopBtn.hidden = true;
+      makeBtn.disabled = false;
+      makeBtn.textContent = 'Make the missing lines';
+      const all = done === plan.lines.length;
+      dlBtn.disabled = !all;
+      // Once everything is made, downloading is the next step.
+      dlBtn.className = all ? 'btn primary' : 'btn';
+      makeBtn.className = all ? 'btn ghost' : 'btn primary';
+      note.textContent = failed ? `Stopped at line ${done + 1}: ${failed}`
+        : stop ? `Stopped after ${done} of ${plan.lines.length} lines. Press Make the missing lines to carry on.`
+        : `All ${done} lines are ready (${made} made now, ${reused} already made). Download the clips and the XML.`;
+      progress.classList.toggle('err', !!failed);
+      renderList();
+    });
+    stopBtn.addEventListener('click', () => { stop = true; stopBtn.disabled = true; });
+    dlBtn.addEventListener('click', () => {
+      const c = remember();
+      location.href = `api.php?${new URLSearchParams({ action: 'vo.export', version_id: vid, scope: c.scope, drafts: c.drafts ? '1' : '0',
+        voices: JSON.stringify(c.voices), model: c.model, speed: c.speed, format: c.format, folder: c.folder })}`;
+    });
+    showDialog(
+      el('h2', { text: `Voice-over · ${S.version.label}` }),
+      el('p', { class: 'small', text: 'Make each line of the script with an ElevenLabs voice, then download one audio clip per line and an XML (FCP7) that places every clip at its line’s time. Import the XML in Premiere Pro or DaVinci Resolve.' }),
+      el('h3', { text: 'What to voice' }), scope,
+      el('label', { class: 'inline' }, drafts, ' Include draft wording (otherwise only approved changes)'),
+      el('h3', { text: 'Voice' }), voiceBox,
+      el('div', { class: 'two' }, el('label', {}, 'Model', model), el('label', {}, 'Pace', speed)),
+      el('h3', { text: 'Files' }), format,
+      el('label', {}, 'Folder the clips will be in, on the editing computer', folder,
+        el('small', { class: 'hint', text: 'With this, the editing app finds the clips by itself. Without it, it asks you to find the first clip once.' })),
+      summary, progress, list,
+      el('div', { class: 'dlg-actions' },
+        el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: () => { stop = true; closeDialog(); } }),
+        stopBtn, dlBtn, makeBtn));
+    await loadPlan();
   }
 
   /* ---------- share links: send this cut to someone outside the team ---------- */
@@ -3025,6 +3180,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
+          can('editor') ? 'Voice-over… voices the script changes (or the whole script) with ElevenLabs, then downloads one clip per line and an FCP7 XML that places them for Premiere or Resolve.' : null,
           can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as a PDF with the changes highlighted, a spreadsheet or plain text.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
         L('The film and version menus at the top hold New film…, New version…, Manage (rename, link to Frame.io, import a comment export, the edit or a transcript, transcribe with ElevenLabs) and Sync comments from Frame.io.',
@@ -3125,6 +3281,7 @@
     setTimeout(() => renderTimeline(), 50);
   });
   $('scriptDl').addEventListener('click', openScriptDownload);
+  $('voBtn').addEventListener('click', () => openVoiceOver().catch(fail));
   $('scriptChanges').addEventListener('change', renderScript);
   $('script').addEventListener('wheel', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
   $('script').addEventListener('touchmove', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });

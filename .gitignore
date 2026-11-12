@@ -15,6 +15,7 @@
 /tests/smtp/log.txt
 /tests/mock/*.log
 /tests/mock/tokens.txt
+/tests/mock/tts.txt
 /tests/mock/user.json
 /tests/match-bench/*.g64
 /tests/match-bench/*.webm

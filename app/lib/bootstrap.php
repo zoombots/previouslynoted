@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.18');
+define('APP_VERSION', '0.7.19');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -339,6 +339,12 @@ SQL);
         transcript_id INTEGER, seg_idx INTEGER NOT NULL, seg_norm TEXT NOT NULL DEFAULT \'\', slot INTEGER NOT NULL DEFAULT 0,
         start_frame INTEGER NOT NULL, end_frame INTEGER NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS script_times_v ON script_times(version_id, id)');
+    // 0.7.19: voice-over takes made with ElevenLabs text to speech (lib/vo.php). The files are in data/vo/.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS vo_takes (
+        id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+        line_key TEXT NOT NULL, text TEXT NOT NULL, voice_id TEXT NOT NULL, model_id TEXT NOT NULL, format TEXT NOT NULL,
+        hash TEXT NOT NULL, bytes INTEGER NOT NULL, duration_ms INTEGER NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS vo_takes_v ON vo_takes(version_id, hash)');
     // 0.7.17: links that also show the film's earlier versions.
     if (!in_array('show_older', array_column($pdo->query('PRAGMA table_info(shares)')->fetchAll(), 'name'), true)) {
         $pdo->exec('ALTER TABLE shares ADD COLUMN show_older INTEGER NOT NULL DEFAULT 0');

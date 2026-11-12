@@ -477,6 +477,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
         <div class="script-modes">
           <button class="btn" type="button" id="scriptWideBtn" aria-pressed="false" title="Current transcript, notes and the new script side by side">Script view</button>
           <button type="button" class="btn ghost" id="scriptDl" hidden>Download script…</button>
+          <button type="button" class="btn ghost" id="voBtn" hidden title="Make new voice-over with ElevenLabs, as clips and an XML for the edit">Voice-over…</button>
         </div>
         <div class="filter-row checks">
           <label class="follow"><input type="checkbox" id="scriptFollow" checked> Follow playback</label>

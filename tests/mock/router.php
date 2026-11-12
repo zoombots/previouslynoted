@@ -66,6 +66,45 @@ if ($path === '/ims/token/v3' && $method === 'POST') {
     out(['access_token' => "mocktoken-$n", 'token_type' => 'bearer', 'expires_in' => 86399]);
 }
 
+/* ---------- ElevenLabs text to speech ---------- */
+if (preg_match('#^/v1/(voices|models)$#', $path, $m) && $method === 'GET') {
+    if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+    if ($m[1] === 'voices') {
+        out(['voices' => [
+            ['voice_id' => 'voiceNarr01', 'name' => 'Rachel', 'category' => 'premade', 'labels' => ['accent' => 'american', 'gender' => 'female'], 'preview_url' => ''],
+            ['voice_id' => 'voiceDeep02', 'name' => 'Adam', 'category' => 'premade', 'labels' => ['accent' => 'american', 'gender' => 'male'], 'preview_url' => ''],
+        ]]);
+    }
+    out([['model_id' => 'eleven_multilingual_v2', 'name' => 'Eleven Multilingual v2', 'can_do_text_to_speech' => true],
+        ['model_id' => 'eleven_v3', 'name' => 'Eleven v3', 'can_do_text_to_speech' => true],
+        ['model_id' => 'scribe_v2', 'name' => 'Scribe v2', 'can_do_text_to_speech' => false]]);
+}
+if (preg_match('#^/v1/text-to-speech/([^/]+)/with-timestamps$#', $path, $m) && $method === 'POST') {
+    if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+    $b = json_decode(file_get_contents('php://input'), true) ?: [];
+    $fmt = $_GET['output_format'] ?? 'mp3_44100_128';
+    $n = (int)@file_get_contents(__DIR__ . '/tts.txt') + 1;
+    file_put_contents(__DIR__ . '/tts.txt', (string)$n);
+    logline("  tts voice={$m[1]} model=" . ($b['model_id'] ?? '?') . " format=$fmt prev=" . (isset($b['previous_text']) ? 'yes' : 'no') . ' text=' . mb_substr($b['text'] ?? '', 0, 40));
+    if (($b['text'] ?? '') === '') out(['detail' => ['message' => 'text is required']], 422);
+    if ($m[1] === 'voiceFreeTier' && str_starts_with($fmt, 'wav')) out(['detail' => ['status' => 'output_format_not_allowed', 'message' => 'Your subscription does not allow this output_format']], 403);
+    $secs = max(1.0, str_word_count($b['text']) / 2.5);
+    if (str_starts_with($fmt, 'wav')) {
+        $rate = (int)substr($fmt, 4);
+        $pcm = '';
+        for ($i = 0, $k = (int)($secs * $rate); $i < $k; $i++) $pcm .= pack('v', (int)(3000 * sin($i * 2 * M_PI * 220 / $rate)) & 0xFFFF);
+        $audio = 'RIFF' . pack('V', 36 + strlen($pcm)) . 'WAVEfmt ' . pack('VvvVVvv', 16, 1, 1, $rate, $rate * 2, 2, 16) . 'data' . pack('V', strlen($pcm)) . $pcm;
+    } else {
+        $audio = file_get_contents(__DIR__ . '/tone.mp3');
+        $secs = 1.5;
+    }
+    $chars = preg_split('//u', $b['text'], -1, PREG_SPLIT_NO_EMPTY);
+    $step = $secs / max(1, count($chars));
+    out(['audio_base64' => base64_encode($audio), 'alignment' => ['characters' => $chars,
+        'character_start_times_seconds' => array_map(fn($i) => $i * $step, array_keys($chars)),
+        'character_end_times_seconds' => array_map(fn($i) => ($i + 1) * $step, array_keys($chars))]]);
+}
+
 /* ---------- ElevenLabs ---------- */
 if ($path === '/v1/speech-to-text' && $method === 'POST') {
     if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
