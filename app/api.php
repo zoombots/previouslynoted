@@ -1460,7 +1460,7 @@ switch ("$method $action") {
                 'accounts' => $c['fio_accounts'] ?? [], 'checked_at' => $c['fio_checked_at'] ?? null,
             ],
             'elevenlabs' => [
-                'key' => mask_secret($c['el_key'] ?? null), 'model' => $c['el_model'] ?? 'scribe_v2',
+                'key' => mask_secret($c['el_key'] ?? null), 'tts_key' => mask_secret($c['el_tts_key'] ?? null), 'model' => $c['el_model'] ?? 'scribe_v2',
                 'language' => $c['el_language'] ?? '', 'diarize' => $c['el_diarize'] ?? true,
             ],
             'mail' => [
@@ -1585,13 +1585,16 @@ switch ("$method $action") {
         if ($key === '' && !el_configured()) {
             fail('Paste the ElevenLabs API key.');
         }
-        conn_save(array_filter(['el_key' => $key !== '' ? $key : null], fn($v) => $v !== null) + [
+        // An optional second key just for voice-over ('-' removes it).
+        $tts = trim((string)($in['tts_key'] ?? ''));
+        $ttsChange = $tts === '-' ? ['el_tts_key' => null] : ($tts !== '' ? ['el_tts_key' => $tts] : []);
+        conn_save(array_filter(['el_key' => $key !== '' ? $key : null], fn($v) => $v !== null) + $ttsChange + [
             'el_model' => $model, 'el_language' => $lang !== '' ? $lang : null, 'el_diarize' => !empty($in['diarize']),
         ]);
         json_out(['ok' => true]);
 
     case 'POST settings.elevenlabs.clear':
-        conn_save(['el_key' => null, 'el_model' => null, 'el_language' => null, 'el_diarize' => null]);
+        conn_save(['el_key' => null, 'el_tts_key' => null, 'el_model' => null, 'el_language' => null, 'el_diarize' => null]);
         json_out(['ok' => true]);
 
     case 'POST film.update':

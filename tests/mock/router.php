@@ -67,8 +67,15 @@ if ($path === '/ims/token/v3' && $method === 'POST') {
 }
 
 /* ---------- ElevenLabs text to speech ---------- */
+// 'el-stt-only' is a key restricted to Speech to Text, as ElevenLabs keys are by default.
+function el_tts_key_check(string $perm): void
+{
+    $k = $_SERVER['HTTP_XI_API_KEY'] ?? '';
+    if ($k === 'el-stt-only') out(['detail' => ['status' => 'missing_permissions', 'message' => "The API key you used is missing the permission $perm to execute this operation."]], 401);
+    if ($k !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+}
 if (preg_match('#^/v1/(voices|models)$#', $path, $m) && $method === 'GET') {
-    if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+    el_tts_key_check($m[1] === 'voices' ? 'voices_read' : 'models_read');
     if ($m[1] === 'voices') {
         out(['voices' => [
             ['voice_id' => 'voiceNarr01', 'name' => 'Rachel', 'category' => 'premade', 'labels' => ['accent' => 'american', 'gender' => 'female'], 'preview_url' => ''],
@@ -80,7 +87,7 @@ if (preg_match('#^/v1/(voices|models)$#', $path, $m) && $method === 'GET') {
         ['model_id' => 'scribe_v2', 'name' => 'Scribe v2', 'can_do_text_to_speech' => false]]);
 }
 if (preg_match('#^/v1/text-to-speech/([^/]+)/with-timestamps$#', $path, $m) && $method === 'POST') {
-    if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+    el_tts_key_check('text_to_speech');
     $b = json_decode(file_get_contents('php://input'), true) ?: [];
     $fmt = $_GET['output_format'] ?? 'mp3_44100_128';
     $n = (int)@file_get_contents(__DIR__ . '/tts.txt') + 1;
@@ -107,7 +114,7 @@ if (preg_match('#^/v1/text-to-speech/([^/]+)/with-timestamps$#', $path, $m) && $
 
 /* ---------- ElevenLabs ---------- */
 if ($path === '/v1/speech-to-text' && $method === 'POST') {
-    if (($_SERVER['HTTP_XI_API_KEY'] ?? '') !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
+    if (!in_array($_SERVER['HTTP_XI_API_KEY'] ?? '', ['el-test-key', 'el-stt-only'], true)) out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
     $raw = file_get_contents('php://input');
     preg_match_all('/name="keyterms"\r\n\r\n([^\r]*)/', $raw, $kt);
     logline('  model=' . ($_POST['model_id'] ?? '?') . ' source_url=' . ($_POST['source_url'] ?? '?') . ' diarize=' . ($_POST['diarize'] ?? '?') . ' keyterms=' . implode('|', $kt[1]));

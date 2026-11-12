@@ -427,6 +427,7 @@
     };
     const fioStatus = el('p', { class: 'conn-status' + (f.expired ? ' err' : ''), text: statusText() });
     const key = el('input', { type: 'password', placeholder: e11.key ? `Saved (${e11.key}). Leave empty to keep it.` : 'sk_…', autocomplete: 'new-password' });
+    const ttsKey = el('input', { type: 'password', placeholder: e11.tts_key ? `Saved (${e11.tts_key}). Leave empty to keep it, or type - to remove it.` : 'Leave empty to use the key above', autocomplete: 'new-password' });
     const model = el('input', { value: e11.model || 'scribe_v2', spellcheck: 'false' });
     const lang = el('input', { value: e11.language || '', placeholder: 'Detect automatically', maxlength: 3 });
     const diar = el('input', { type: 'checkbox', checked: e11.diarize !== false });
@@ -479,12 +480,12 @@
         } }) : null,
         mode === 'user' && (f.signed_in || f.expired) ? el('button', { type: 'button', class: f.expired ? 'btn' : 'btn ghost', text: 'Sign in again', onclick: () => { location.href = 'oauth.php?start=1'; } }) : null,
         submitBtn)),
-      el('h3', { text: 'ElevenLabs transcription' }),
-      el('p', { text: 'Transcribes a linked cut straight from Frame.io (Scribe, about $0.22 per hour of audio). Create an API key with Speech to Text access in ElevenLabs → Developers → API keys.' }),
+      el('h3', { text: 'ElevenLabs transcription and voice-over' }),
+      el('p', { text: 'Transcribes a linked cut straight from Frame.io (Scribe, about $0.22 per hour of audio), and makes new voice-over from the script. In ElevenLabs → Developers → API keys, give the key Speech to Text, Text to Speech and Voices (Read) access. An existing key can be edited there (⋯ → Edit); it stays the same key.' }),
       el('form', { onsubmit: async (ev) => {
         ev.preventDefault();
         try {
-          await api('settings.elevenlabs', { body: { key: key.value, model: model.value, language: lang.value, diarize: diar.checked } });
+          await api('settings.elevenlabs', { body: { key: key.value, tts_key: ttsKey.value, model: model.value, language: lang.value, diarize: diar.checked } });
           await loadState({ filmId: S.filmId, versionId: S.versionId });
           toast('ElevenLabs settings saved.');
           openSettings();
@@ -493,6 +494,8 @@
       el('label', {}, 'API key', key),
       el('div', { class: 'two' }, el('label', {}, 'Model', model), el('label', {}, 'Language (optional)', lang)),
       el('label', { class: 'inline' }, diar, ' Label different speakers'),
+      el('label', {}, 'Voice-over key (optional)', ttsKey,
+        el('small', { class: 'hint', text: 'Only if you’d rather use a separate key for voice-over, with Text to Speech and Voices (Read) access.' })),
       el('div', { class: 'dlg-actions' },
         e11.key ? el('button', { type: 'button', class: 'btn ghost danger left', text: 'Remove key', onclick: async () => {
           try { await api('settings.elevenlabs.clear', { body: {} }); await loadState({ filmId: S.filmId, versionId: S.versionId }); openSettings(); } catch (err) { fail(err); }

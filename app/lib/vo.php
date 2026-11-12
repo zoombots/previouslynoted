@@ -18,6 +18,40 @@ const VO_FORMATS = [
     'mp3' => ['el' => 'mp3_44100_128', 'ext' => 'mp3', 'rate' => 44100, 'label' => 'MP3 44.1 kHz'],
 ];
 
+/** The key for voice-over: its own, if one is set in Settings, else the transcription key. */
+function el_tts_key(): string
+{
+    $c = conn_reload();
+    $k = (string)($c['el_tts_key'] ?? '') ?: (string)($c['el_key'] ?? '');
+    if ($k === '') {
+        throw new ConnectError('ElevenLabs isn’t connected yet. Add the API key in Settings.');
+    }
+    return $k;
+}
+
+/**
+ * A plain explanation when ElevenLabs refuses the key. Keys are restricted by default, and a key made for
+ * transcription usually has only Speech to Text turned on.
+ */
+function el_key_problem(int $status, ?array $json, string $raw): ?string
+{
+    $why = api_error_text($json, $raw);
+    $code = is_array($json['detail'] ?? null) ? (string)($json['detail']['status'] ?? '') : '';
+    $perm = null;
+    if (preg_match('/missing the permission (\w+)/i', $why, $m)) {
+        $perm = $m[1];
+    }
+    if ($code === 'missing_permissions' || $perm) {
+        $names = ['text_to_speech' => 'Text to Speech', 'voices_read' => 'Voices (Read)', 'models_read' => 'Models (Read)', 'speech_to_text' => 'Speech to Text', 'user_read' => 'User'];
+        $what = $perm ? ($names[$perm] ?? $perm) : 'Text to Speech and Voices (Read)';
+        return "The ElevenLabs API key doesn’t have $what turned on. In ElevenLabs → Developers → API keys, edit the key (⋯ → Edit) and turn on Text to Speech and Voices (Read), then save; the key itself stays the same. Or add a separate voice-over key in Settings.";
+    }
+    if ($status === 401) {
+        return "ElevenLabs didn’t accept the API key ($why). Check it in Settings.";
+    }
+    return null;
+}
+
 function vo_dir(int $versionId): string
 {
     $d = DATA_DIR . '/vo/' . $versionId;
@@ -30,14 +64,10 @@ function vo_dir(int $versionId): string
 /** The voices and speech models on the ElevenLabs account. */
 function el_voices(): array
 {
-    $c = conn_reload();
-    if (empty($c['el_key'])) {
-        throw new ConnectError('ElevenLabs isn’t connected yet. Add the API key in Settings.');
-    }
-    $h = ['xi-api-key: ' . $c['el_key'], 'Accept: application/json'];
+    $h = ['xi-api-key: ' . el_tts_key(), 'Accept: application/json'];
     [$st, $json, $raw] = http_call('GET', el_base() . '/v1/voices', $h, null, 30);
     if ($st !== 200 || !is_array($json)) {
-        throw new ConnectError($st === 401 ? 'ElevenLabs didn’t accept the API key. Check it in Settings.' : 'ElevenLabs answered ' . $st . ': ' . api_error_text($json, $raw));
+        throw new ConnectError(el_key_problem($st, $json, $raw) ?? 'ElevenLabs answered ' . $st . ': ' . api_error_text($json, $raw));
     }
     $voices = [];
     foreach ($json['voices'] ?? [] as $v) {
@@ -141,10 +171,7 @@ function vo_make_take(int $versionId, array $line, string $voice, array $set, ar
     if (is_file($file) && filesize($file) > 0) {
         return ['hash' => $hash, 'duration' => vo_duration($file, $set['format']), 'cached' => true];
     }
-    $c = conn_reload();
-    if (empty($c['el_key'])) {
-        throw new ConnectError('ElevenLabs isn’t connected yet. Add the API key in Settings.');
-    }
+    $key = el_tts_key();
     $body = ['text' => $line['text'], 'model_id' => $set['model'],
         'voice_settings' => ['stability' => $set['stability'], 'similarity_boost' => 0.75, 'speed' => $set['speed']]];
     if (($context['previous'] ?? '') !== '') {
@@ -154,13 +181,12 @@ function vo_make_take(int $versionId, array $line, string $voice, array $set, ar
         $body['next_text'] = mb_substr($context['next'], 0, 600);
     }
     $url = el_base() . '/v1/text-to-speech/' . rawurlencode($voice) . '/with-timestamps?output_format=' . VO_FORMATS[$set['format']]['el'];
-    [$st, $json, $raw] = http_call('POST', $url, ['xi-api-key: ' . $c['el_key'], 'Content-Type: application/json', 'Accept: application/json'],
+    [$st, $json, $raw] = http_call('POST', $url, ['xi-api-key: ' . $key, 'Content-Type: application/json', 'Accept: application/json'],
         json_encode($body, JSON_UNESCAPED_UNICODE), 120);
     if ($st !== 200 || !is_array($json) || empty($json['audio_base64'])) {
         $why = api_error_text($json, $raw);
         $lower = strtolower($why);
-        throw new ConnectError(match (true) {
-            $st === 401 => "ElevenLabs didn’t accept the API key ($why).",
+        throw new ConnectError(el_key_problem($st, $json, $raw) ?? match (true) {
             $st === 402 || str_contains($lower, 'quota') || str_contains($lower, 'credit') => "ElevenLabs says the account is out of credit ($why).",
             $set['format'] === 'wav' && (str_contains($lower, 'output_format') || str_contains($lower, 'tier') || str_contains($lower, 'subscription'))
                 => "ElevenLabs won’t make WAV on this plan ($why). Choose MP3, or upgrade the ElevenLabs plan.",
