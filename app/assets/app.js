@@ -454,7 +454,7 @@
     };
     syncMode();
     const busy = (b, on) => { b.disabled = on; };
-    showDialog(
+    showDialog({ lightDismiss: true },
       el('h2', { text: 'Settings' }),
       el('h3', { text: 'Frame.io' }),
       el('form', { onsubmit: async (ev) => {
@@ -481,7 +481,9 @@
         mode === 'user' && (f.signed_in || f.expired) ? el('button', { type: 'button', class: f.expired ? 'btn' : 'btn ghost', text: 'Sign in again', onclick: () => { location.href = 'oauth.php?start=1'; } }) : null,
         submitBtn)),
       el('h3', { text: 'ElevenLabs transcription and voice-over' }),
-      el('p', { text: 'Transcribes a linked cut straight from Frame.io (Scribe, about $0.22 per hour of audio), and makes new voice-over from the script. In ElevenLabs → Developers → API keys, give the key Speech to Text, Text to Speech and Voices (Read) access. An existing key can be edited there (⋯ → Edit); it stays the same key.' }),
+      el('p', {}, 'Transcribes a linked cut straight from Frame.io (Scribe, about $0.22 per hour of audio), and makes new voice-over from the script. In ',
+        el('a', { href: 'https://elevenlabs.io/app/developers/api-keys', target: '_blank', rel: 'noopener', text: 'ElevenLabs → Developers → API keys' }),
+        ', give the key Speech to Text, Text to Speech and Voices (Read) access. An existing key can be edited there (⋯ → Edit); it stays the same key.'),
       el('form', { onsubmit: async (ev) => {
         ev.preventDefault();
         try {

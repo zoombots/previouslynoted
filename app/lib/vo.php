@@ -44,7 +44,7 @@ function el_key_problem(int $status, ?array $json, string $raw): ?string
     if ($code === 'missing_permissions' || $perm) {
         $names = ['text_to_speech' => 'Text to Speech', 'voices_read' => 'Voices (Read)', 'models_read' => 'Models (Read)', 'speech_to_text' => 'Speech to Text', 'user_read' => 'User'];
         $what = $perm ? ($names[$perm] ?? $perm) : 'Text to Speech and Voices (Read)';
-        return "The ElevenLabs API key doesn’t have $what turned on. In ElevenLabs → Developers → API keys, edit the key (⋯ → Edit) and turn on Text to Speech and Voices (Read), then save; the key itself stays the same. Or add a separate voice-over key in Settings.";
+        return "The ElevenLabs API key doesn’t have $what turned on. In ElevenLabs → Developers → API keys (elevenlabs.io/app/developers/api-keys), edit the key (⋯ → Edit) and turn on Text to Speech and Voices (Read), then save; the key itself stays the same. Or add a separate voice-over key in Settings.";
     }
     if ($status === 401) {
         return "ElevenLabs didn’t accept the API key ($why). Check it in Settings.";

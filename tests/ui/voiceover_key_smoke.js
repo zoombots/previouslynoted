@@ -26,6 +26,10 @@ const check = (ok, msg) => { if (!ok) fails.push(msg); };
   await page.waitForSelector('#dlg h3:has-text("transcription and voice-over")');
   check(await page.locator('#dlg label', { hasText: 'Voice-over key' }).count() === 1, 'voice-over key field');
   await page.screenshot({ path: '/tmp/claude-0/pn-share-shots/el-settings.png' });
+  check(await page.locator('#dlg a[href="https://elevenlabs.io/app/developers/api-keys"]').count() === 1, 'link to the ElevenLabs API keys page');
+  await page.mouse.click(10, 890);
+  await page.waitForTimeout(300);
+  check(!(await page.locator('#dlg').evaluate((d) => d.open)), 'click outside closes Settings');
   // Back to the normal test key.
   check(await save({ key: 'el-test-key', tts_key: '-' }) === 200, 'restore');
   await browser.close();
