@@ -473,6 +473,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
               <label class="btn">Upload…<input type="file" id="scriptFile" accept=".srt,.vtt,.txt,text/plain,text/vtt" hidden></label>
             </div>
             <button class="btn" type="button" id="transcribeBtn" hidden>Transcribe this cut with ElevenLabs</button>
+            <p class="small" id="transcribeHint" hidden>To transcribe the cut’s sound automatically, an admin adds the ElevenLabs API key in Settings.</p>
           </div>
         </details>
         <p class="job" id="jobLine" hidden></p>

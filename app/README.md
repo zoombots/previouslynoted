@@ -226,7 +226,9 @@ For a cut that is only sound (a radio edit, a narration record, a temp mix), so 
 3. The player shows **Sound only** where the picture would be, and everyone on the version (and guests on a share link) can play it, with the timeline, TX track and notes as usual.
 4. Rewrite, cross out and add lines, then **Voice-over…** voices the new script with the voices you pick and downloads one clip per line with an FCP7 XML, as for any cut.
 
-An existing version can get its sound later: **Upload sound only** on the empty player, or **Sound only → Upload…** in Films & versions (**Replace…** and **Remove** are there too). Opening a sound file from your computer with **Open a video file** also works for listening, but it isn't uploaded, so it can't be transcribed. Sound files live in `data/media/`.
+Not ticked? **Transcribe this cut with ElevenLabs** is under **Transcript files** in the Transcript tab, **Transcribe** is next to the sound in Films & versions, and the message after an upload has **Transcribe it**. A sound file opened from your computer with **Open a video file** offers **Upload and transcribe**: it's uploaded to the version first, then transcribed.
+
+An existing version can get its sound later: **Upload sound only** on the empty player, or **Sound only → Upload…** in Films & versions (**Replace…** and **Remove** are there too). Sound files live in `data/media/`.
 
 ### On a phone or tablet
 

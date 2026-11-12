@@ -249,7 +249,10 @@
     const linked = !!(S.conn.frameio && S.version?.fio_file_id);
     $('streamBtn').hidden = !linked;
     $('qualityRow').hidden = !(linked && video.dataset.remote === '1');
-    $('transcribeBtn').hidden = !can('editor') || !(S.conn.elevenlabs && S.version && onServer(S.version));
+    const localSound = localSoundFile();
+    $('transcribeBtn').hidden = !can('editor') || !!SHARE || !(S.conn.elevenlabs && S.version && (onServer(S.version) || localSound));
+    $('transcribeBtn').textContent = !onServer(S.version || {}) && localSound ? `Upload ${localSound.name} and transcribe it with ElevenLabs` : 'Transcribe this cut with ElevenLabs';
+    $('transcribeHint').hidden = !(can('editor') && !SHARE && S.version && !S.conn.elevenlabs);
     renderPickers();
   }
 
@@ -257,6 +260,24 @@
   // A cut that is only sound (a radio edit, a narration record): the file is uploaded to the server, so everyone
   // can play it and ElevenLabs can transcribe it.
   const onServer = (v) => !!(v.fio_file_id || v.video_url || v.audio_name);
+  // A sound file opened from this computer for the current version (not uploaded yet).
+  const localSoundFile = () => { const s = S.versionId && S.sources.get(S.versionId); return s?.local && s.sound && s.file ? s.file : null; };
+  // Transcribe the current version; a sound file only on this computer is uploaded first.
+  async function transcribeCurrent() {
+    const v = S.version; if (!v) return;
+    const f = !onServer(v) && localSoundFile();
+    if (f) {
+      if (!confirm(`Upload ${f.name} to ${v.label} and transcribe it with ElevenLabs? The sound is kept on the server so everyone can play it. A 45-minute recording costs about 17 cents.`)) return;
+      await uploadSound(v, f);
+      return startTranscribe(v.id, true);
+    }
+    return startTranscribe(v.id);
+  }
+  // After a sound upload: offer the transcription straight away.
+  function soundUploaded(v) {
+    if (S.conn.elevenlabs && can('editor')) toast('Sound uploaded.', { label: 'Transcribe it', run: () => { setTab('script'); startTranscribe(v.id, true).catch(fail); } });
+    else toast('Sound uploaded.');
+  }
   function soundSource(v) {
     if (!v?.audio_name) return null;
     const q = new URLSearchParams({ action: 'version.audio', version_id: v.id, n: v.audio_size || 0, ...(SHARE ? { share: SHARE } : {}) });
@@ -1777,16 +1798,21 @@
     if (!f || !S.versionId) return;
     const old = S.sources.get(S.versionId);
     if (old?.local) URL.revokeObjectURL(old.url);
-    const src = { url: URL.createObjectURL(f), name: f.name, local: true, sound: f.type.startsWith('audio/') };
+    const sound = f.type.startsWith('audio/') || /\.(wav|mp3|m4a|aac|aiff?|flac|ogg|opus)$/i.test(f.name);
+    const src = { url: URL.createObjectURL(f), name: f.name, local: true, sound, file: sound ? f : null };
     S.sources.set(S.versionId, src);
     ls.set('file:' + S.versionId, f.name);
     setSource(src);
+    updateLinkUI();
     e.target.value = '';
+    if (sound && can('editor') && !SHARE && S.conn.elevenlabs && !onServer(S.version)) {
+      toast('This sound plays from your computer.', { label: 'Upload and transcribe', run: () => { setTab('script'); transcribeCurrent().catch(fail); } });
+    }
   });
   $('urlBtn').addEventListener('click', openVideoLink);
   $('soundInput').addEventListener('change', (e) => {
     const f = e.target.files[0]; e.target.value = '';
-    if (f && S.version) uploadSound(S.version, f).then(() => toast(S.conn.elevenlabs ? 'Sound uploaded. Transcribe it from the Transcript tab.' : 'Sound uploaded.'), fail);
+    if (f && S.version) { const v = S.version; uploadSound(v, f).then(() => soundUploaded(v), fail); }
   });
   $('changeVideoBtn').addEventListener('click', () => showSourceChoice());
   $('keepVideoBtn').addEventListener('click', hideSourceChoice);
@@ -2558,6 +2584,7 @@
           if (sound) {
             await uploadSound(S.version, sound);
             if (S.conn.elevenlabs && soundTx.checked) { setTab('script'); await startTranscribe(r.id, true); return; }
+            if (!r.carried) { soundUploaded(S.version); return; }
           }
           if (fioPick.value) await syncComments(false).catch(fail);
           toast(r.carried ? `${r.carried} unfinished notes carried over. Import this cut’s edit or transcript to place them automatically.` + (r.placement ? placementSummary({ [r.id]: r.placement }, r.id) : '') : 'Version added');
@@ -2663,7 +2690,7 @@
     const parent = S.versions.find((x) => x.id === v.carried_from);
     const meta = [`${v.note_count} notes`, parent ? `carried from ${parent.label}` : null].filter(Boolean).join(' · ');
     // What this version has, at a glance, for the one-line (closed) view.
-    const sound = pick(SOUND_ACCEPT, async (f) => { await uploadSound(v, f); await reopenManage(v, 'Sound uploaded.'); });
+    const sound = pick(SOUND_ACCEPT, async (f) => { await uploadSound(v, f); await reopenManage(v); soundUploaded(v); });
     const has = [v.fio_file_id ? 'Frame.io' : null, v.audio_name ? 'sound' : null, v.edit ? 'edit' : null, v.transcript_count > 0 ? 'transcript' : null].filter(Boolean);
     return el('details', { class: 'vrow', open, ontoggle: (e) => { if (e.target.open) S.manageOpen = v.id; } },
       el('summary', { class: 'vrow-head' },
@@ -2685,6 +2712,9 @@
         el('dd', {},
           el('span', { text: v.audio_name ? `${v.audio_name} · ${fmtBytes(+v.audio_size || 0)}` : 'For a cut without picture: upload its sound to play and transcribe it' }),
           can('editor') ? el('label', { class: 'btn ghost' }, v.audio_name ? 'Replace…' : 'Upload…', sound) : null,
+          can('editor') && v.audio_name && S.conn.elevenlabs ? el('button', { type: 'button', class: 'btn', text: 'Transcribe', onclick: async () => {
+            closeDialog(); if (v.id !== S.versionId) await selectVersion(v.id); setTab('script'); startTranscribe(v.id).catch(fail);
+          } }) : null,
           can('editor') && v.audio_name ? el('button', { type: 'button', class: 'btn ghost', text: 'Remove', onclick: async () => {
             try { if (await removeSound(v)) await reopenManage(v, 'Sound removed.'); } catch (err) { fail(err); }
           } }) : null),
@@ -3352,7 +3382,7 @@
   if (!canNote()) $('addBtn').hidden = true;
   $('streamBtn').addEventListener('click', () => streamFrameio().catch(fail));
   $('quality').addEventListener('change', () => streamFrameio(S.frame).catch(fail));
-  $('transcribeBtn').addEventListener('click', () => S.versionId && startTranscribe(S.versionId).catch(fail));
+  $('transcribeBtn').addEventListener('click', () => transcribeCurrent().catch(fail));
   $('tabNotes').addEventListener('click', () => setTab('notes'));
   $('tabScript').addEventListener('click', () => setTab('script'));
   $('scriptUpload').addEventListener('change', (e) => loadScript(+e.target.value).catch(fail));
