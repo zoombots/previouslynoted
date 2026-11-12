@@ -1866,10 +1866,17 @@
   async function saveLine(i, slot, st, text, undoMsg) {
     try {
       const before = S.scriptEdits.lines.get(`${i}:${slot}`);
+      // Keep the line being changed where it is on screen while the list is redrawn.
+      const rowOf = () => document.querySelector(slot === 0 || slot === 'new' ? `#script li.tline[data-i="${i}"]` : `#script li.tline[data-key="${i}:${slot}"]`)
+        || document.querySelector(`#script li.tline[data-i="${i}"]`);
+      const top0 = rowOf()?.getBoundingClientRect().top;
       const r = await api('script.edit', { body: { version_id: S.versionId, transcript_id: S.scriptEdits.transcriptId, seg_idx: i, slot, state: st, text: text ?? '' } });
+      S.scriptScrolledAt = Date.now();
       setScriptLines(S.scriptEdits.transcriptId, r.lines, r.times);
       S.editingLine = null;
       renderScript();
+      const top1 = rowOf()?.getBoundingClientRect().top;
+      if (top0 != null && top1 != null) $('script').scrollTop += top1 - top0;
       if (undoMsg) toast(undoMsg, { label: 'Undo', run: () => saveLine(i, slot, before?.state || 'same', before?.text || '') });
     } catch (e) { fail(e); }
   }
@@ -1993,12 +2000,14 @@
       ? [segs[i].speaker ? el('b', { text: segs[i].speaker + '  ' }) : '', segs[i].text]
       : [el('span', { text: i + 1 < segs.length ? `Next line at ${tc(segs[i + 1].start)}` : '' })]));
     if (i === scriptIdx && !force) return;
+    // Follow playback only when the playhead reaches another line: redrawing the list (after an edit) mustn't scroll it.
+    const moved = i !== scriptIdx;
     scriptIdx = i;
     for (const x of document.querySelectorAll('.tline.now')) x.classList.remove('now');
     const li = document.querySelector(`.tline[data-i="${i}"]`);
     if (!li) return;
     li.classList.add('now');
-    if (S.tab === 'script' && $('scriptFollow').checked && Date.now() - S.scriptScrolledAt > 4000) {
+    if (moved && S.tab === 'script' && $('scriptFollow').checked && Date.now() - S.scriptScrolledAt > 4000) {
       revealIn($('script'), li, 'center');
     }
   }
@@ -3119,6 +3128,9 @@
   $('scriptChanges').addEventListener('change', renderScript);
   $('script').addEventListener('wheel', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
   $('script').addEventListener('touchmove', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
+  // Working in the list (editing a line, clicking a button) also holds off following playback for a moment.
+  $('script').addEventListener('pointerdown', () => { S.scriptScrolledAt = Date.now(); }, { passive: true });
+  $('script').addEventListener('input', () => { S.scriptScrolledAt = Date.now(); });
   if (ls.get('tab') === 'script') setTab('script');
   $('search').addEventListener('input', (e) => { S.filter.q = e.target.value.trim().toLowerCase(); applyFilters(); });
   $('placeQueue').addEventListener('click', () => setStatusFilter(S.filter.status === 'unconfirmed' ? '' : 'unconfirmed'));

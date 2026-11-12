@@ -1,0 +1,30 @@
+// Saving or approving a line in Script view keeps that line where it is on screen. node tests/ui/script_approve_steady.js
+const { chromium } = require('playwright');
+const tops = [];
+(async () => {
+  const b = await chromium.launch(); const p = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+  p.on('pageerror', (e) => { console.log('ERR', String(e)); process.exitCode = 1; });
+  await p.goto(process.env.PN_BASE || 'http://127.0.0.1:8081/'); await p.fill('input[name=email]', 'francis@example.com'); await p.fill('input[name=password]', 'recovered-pass1');
+  await Promise.all([p.waitForNavigation(), p.click('button.primary')]); await p.waitForSelector('#notes li', { timeout: 15000 });
+  await p.click('#views button:has-text("Script")'); await p.waitForTimeout(1500);
+  const row = p.locator('#script li.tline.wide[data-i="20"]');
+  await row.scrollIntoViewIfNeeded();
+  const pos = async (t) => tops.push([t, (await p.evaluate(() => { const r = document.querySelector('#script li.tline.wide[data-i="20"]'); const sc = document.querySelector('#script'); let s = sc; while (s && s.scrollHeight <= s.clientHeight) s = s.parentElement;
+    return { top: Math.round(r.getBoundingClientRect().top), scrollTop: s && s.scrollTop, scroller: s && (s.id || s.className), newText: r.querySelector('.cell-new')?.innerText.slice(0, 60) }; })).top]);
+  await pos('start');
+  await row.locator('button:has-text("Rewrite")').click(); await p.waitForTimeout(300);
+  await pos('editing');
+  await row.locator('textarea').fill('Approve layout test wording');
+  await row.locator('button:has-text("Save draft")').click(); await p.waitForTimeout(1000);
+  await pos('draft');
+  await p.screenshot({ path: '/tmp/claude-0/pn-share-shots/appr-before.png' });
+  await p.locator('#script li.tline.wide[data-i="20"] button:has-text("Approve")').click(); await p.waitForTimeout(1000);
+  await pos('approved');
+  await p.screenshot({ path: '/tmp/claude-0/pn-share-shots/appr-after.png' });
+  await p.locator('#script li.tline.wide[data-i="20"] button:has-text("Unapprove")').click(); await p.waitForTimeout(600);
+  await p.locator('#script li.tline.wide[data-i="20"] button:has-text("Back to original")').click(); await p.waitForTimeout(600);
+  await b.close();
+  const [, ed] = tops[1], bad = tops.slice(2).filter(([, t]) => Math.abs(t - ed) > 2);
+  console.log(bad.length ? 'FAIL\n  line moved: ' + JSON.stringify(tops) : 'ok');
+  process.exit(bad.length ? 1 : 0);
+})();
