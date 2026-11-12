@@ -2249,7 +2249,9 @@
           onclick: (e) => { if (xt && !e.target.closest('.cell-new, button, textarea')) seekFrame(xt[0]); } },
           el('span', { class: 'seg-tc', text: xt ? tc(xt[0]) : '+' }),
           el('div', { class: 'seg-main' }, el('span', { class: 'seg-change', text: 'New line after ' + tc(g.start) })),
-          el('div', { class: 'cell-notes' }),
+          // Notes on an added line sit at its time on the TX track (and show here, not on the line before).
+          el('div', { class: 'cell-notes' }, xt ? el('div', { class: 'seg-notes', 'data-key': `${i}:${x.slot}`, 'data-from': xt[0], 'data-to': xt[1] }) : null,
+            xt ? addNoteBox({ start: xt[0] }) : null),
           newCell(i, x.slot, g)));
       }
       if (wide && S.editingLine === `${i}:new`) {
@@ -2375,14 +2377,18 @@
     const segs = S.script.segments;
     if (!segs.length) return;
     const by = new Map();
+    // Added lines first: a note inside an added line's time belongs to it.
+    const added = [...document.querySelectorAll('.seg-notes[data-key]')].map((b) => ({ key: b.dataset.key, from: +b.dataset.from, to: +b.dataset.to }));
     for (const n of S.visible) {
+      const a = added.find((x) => n.frame >= x.from && n.frame < x.to);
+      if (a) { if (!by.has(a.key)) by.set(a.key, []); by.get(a.key).push(n); continue; }
       const i = segmentIndexAt(n.frame);
       if (i < 0) continue;
       if (!by.has(i)) by.set(i, []);
       by.get(i).push(n);
     }
     for (const box of document.querySelectorAll('.seg-notes')) {
-      const list = by.get(+box.dataset.i) || [];
+      const list = by.get(box.dataset.key || +box.dataset.i) || [];
       box.replaceChildren(...list.map((n) => el('button', {
         type: 'button', class: 'nchip' + (isDone(n) ? ' done' : ''), style: `--c:${tagColor(n.tag)}`,
         title: n.text, onclick: () => seekFrame(n.frame, n.id),
