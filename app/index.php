@@ -428,6 +428,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
           <div class="tl-scale" id="tlScale"></div>
           <div class="tl-shots" id="tlShots"></div>
           <div class="tl-script" id="tlScript" hidden></div>
+          <div class="tl-audio" id="tlAudio" hidden><div class="tl-wave" data-kind="voice"><canvas></canvas></div><div class="tl-wave" data-kind="rest"><canvas></canvas></div></div>
           <div class="tl-lanes" id="tlLanes"></div>
           <div class="tl-head" id="tlHead"></div>
         </div>
@@ -481,6 +482,16 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
           <button class="btn" type="button" id="scriptWideBtn" aria-pressed="false" title="Current transcript, notes and the new script side by side">Script view</button>
           <button type="button" class="btn ghost" id="scriptDl" hidden>Download script…</button>
           <button type="button" class="btn ghost" id="voBtn" hidden title="Make new voice-over with ElevenLabs, as clips and an XML for the edit">Voice-over…</button>
+          <button type="button" class="btn ghost" id="splitBtn" hidden title="Split the cut’s sound into the voice and the rest (music, effects) with ElevenLabs">Voice &amp; rest…</button>
+        </div>
+        <div class="hear-row" id="hearRow" hidden>
+          <span class="hear-lbl">Hear</span>
+          <div class="views hear-seg" id="hearSeg" role="radiogroup" aria-label="What to hear while it plays">
+            <button type="button" role="radio" data-hear="orig" aria-checked="true" title="The cut’s own sound">Original</button>
+            <button type="button" role="radio" data-hear="split" aria-checked="false" title="The voice and the rest as two tracks (VOX and BG on the timeline); click either to mute it">Voice + rest</button>
+            <button type="button" role="radio" data-hear="newvo" aria-checked="false" title="The new voice-over in place of the old voice, where takes have been made">New VO</button>
+          </div>
+          <p class="hear-note small" id="hearNote" hidden></p>
         </div>
         <div class="filter-row checks">
           <label class="follow"><input type="checkbox" id="scriptFollow" checked> Follow playback</label>

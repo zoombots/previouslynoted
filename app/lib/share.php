@@ -16,7 +16,7 @@ const SHARE_VIEWS = ['review' => 'Review', 'script' => 'Script', 'playback' => '
 
 /** The actions a guest may use. Each one is also checked against the link's film and version in api.php. */
 const GUEST_ACTIONS = [
-    'GET state', 'GET notes', 'GET transcript', 'GET script', 'GET script.export', 'GET version.media', 'GET version.audio', 'GET transcribe.status',
+    'GET state', 'GET notes', 'GET transcript', 'GET script', 'GET script.export', 'GET version.media', 'GET version.audio', 'GET version.stem', 'GET vo.preview', 'GET vo.take', 'GET transcribe.status',
     'POST note.create', 'POST note.reply', 'POST note.edit', 'POST script.edit', 'POST script.time',
 ];
 

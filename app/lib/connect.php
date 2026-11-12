@@ -97,7 +97,8 @@ function http_call(string $method, string $url, array $headers = [], array|strin
 }
 
 /** POST a body made of a text head, a file read from disk, and a text tail, without loading the file into memory. */
-function http_post_stream(string $url, array $headers, string $head, string $file, string $tail, int $timeout = 30): array
+/** With $outFile, the response body goes to that file instead of memory (for large answers such as a zip). */
+function http_post_stream(string $url, array $headers, string $head, string $file, string $tail, int $timeout = 30, ?string $outFile = null): array
 {
     if (!function_exists('curl_init')) {
         throw new ConnectError('The PHP curl extension is off. Turn it on in cPanel → Select PHP Version → Extensions.');
@@ -139,7 +140,14 @@ function http_post_stream(string $url, array $headers, string $head, string $fil
         CURLOPT_HTTPHEADER => array_merge($headers, ['Expect:', 'Content-Length: ' . $size]),
         CURLOPT_USERAGENT => 'PreviouslyNoted/' . APP_VERSION,
     ]);
+    $out = $outFile !== null ? fopen($outFile, 'wb') : null;
+    if ($out) {
+        curl_setopt($ch, CURLOPT_FILE, $out);
+    }
     $raw = curl_exec($ch);
+    if ($out) {
+        fclose($out);
+    }
     if ($raw === false) {
         $err = curl_error($ch);
         curl_close($ch);
@@ -147,6 +155,10 @@ function http_post_stream(string $url, array $headers, string $head, string $fil
     }
     $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     curl_close($ch);
+    if ($out) {
+        // Only an error answer is worth reading back.
+        $raw = $status === 200 ? '' : (string)file_get_contents($outFile, false, null, 0, 20000);
+    }
     $json = json_decode((string)$raw, true);
     return [$status, is_array($json) ? $json : null, (string)$raw, []];
 }

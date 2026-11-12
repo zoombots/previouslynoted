@@ -977,3 +977,20 @@ ol.vo-lines:empty { display: none; }
 .screen.sound-only.choosing .screen-sound { display: none; }
 .sound-new { display: grid; gap: 10px; }
 dialog progress.up-bar { width: 100%; height: 8px; }
+
+/* Hearing the voice, the rest and the new VO (Transcript tab), and their tracks on the timeline. */
+.hear-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hear-lbl { font-size: 13px; color: var(--muted); }
+.views.hear-seg button[aria-checked=true] { background: var(--panel-2); color: var(--text); font-weight: 700; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); }
+.views.hear-seg button:disabled { opacity: .45; cursor: default; }
+.hear-note { flex-basis: 100%; margin: 0; color: var(--muted); }
+.tl-audio { display: grid; border-top: 1px dashed color-mix(in srgb, var(--line) 60%, transparent); }
+.tl-wave { position: relative; height: 22px; }
+.tl-wave canvas { position: absolute; inset: 1px 0; width: 100%; height: 20px; display: block; }
+.tl-audio.idle .tl-wave { opacity: .45; }
+.tl-wave.muted { opacity: .25; }
+.tl-gutter .g-audio { letter-spacing: .02em; }
+.tl-gutter .g-audio.muted { opacity: .45; text-decoration: line-through; }
+.tl-gutter .g-audio.idle { opacity: .6; }
+.sl.vo::after { content: '♪'; position: absolute; right: 3px; top: 0; font-size: 11px; line-height: 16px; color: var(--st-approved); }
+.split-files { display: flex; gap: 8px; flex-wrap: wrap; }

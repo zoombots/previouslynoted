@@ -22,3 +22,4 @@
 /tests/match-bench/*.webm
 /.impeccable/live/
 *.pyc
+/tests/mock/stems_req.txt

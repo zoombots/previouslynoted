@@ -43,8 +43,10 @@ function el_key_problem(int $status, ?array $json, string $raw): ?string
     }
     if ($code === 'missing_permissions' || $perm) {
         $names = ['text_to_speech' => 'Text to Speech', 'voices_read' => 'Voices (Read)', 'models_read' => 'Models (Read)', 'speech_to_text' => 'Speech to Text', 'user_read' => 'User'];
-        $what = $perm ? ($names[$perm] ?? $perm) : 'Text to Speech and Voices (Read)';
-        return "The ElevenLabs API key doesn’t have $what turned on. In ElevenLabs → Developers → API keys (elevenlabs.io/app/developers/api-keys), edit the key (⋯ → Edit) and turn on Text to Speech and Voices (Read), then save; the key itself stays the same. Or add a separate voice-over key in Settings.";
+        $names += ['music_generation' => 'Music', 'audio_isolation' => 'Voice Isolator'];
+        // Voice-over needs both of these, so name both; other jobs name the one that's missing.
+        $what = !$perm || in_array($perm, ['text_to_speech', 'voices_read', 'models_read'], true) ? 'Text to Speech and Voices (Read)' : ($names[$perm] ?? $perm);
+        return "The ElevenLabs API key doesn’t have $what turned on. In ElevenLabs → Developers → API keys (elevenlabs.io/app/developers/api-keys), edit the key (⋯ → Edit) and turn on $what, then save; the key itself stays the same. Or add a separate voice-over key in Settings.";
     }
     if ($status === 401) {
         return "ElevenLabs didn’t accept the API key ($why). Check it in Settings.";
@@ -169,7 +171,15 @@ function vo_make_take(int $versionId, array $line, string $voice, array $set, ar
     $hash = vo_hash($line['text'], $voice, $set);
     $file = vo_file($versionId, $hash, $set['format']);
     if (is_file($file) && filesize($file) > 0) {
-        return ['hash' => $hash, 'duration' => vo_duration($file, $set['format']), 'cached' => true];
+        $dur = vo_duration($file, $set['format']);
+        // The same words on another line (or a take from before) still count as this line's take.
+        $has = db()->prepare('SELECT 1 FROM vo_takes WHERE version_id = ? AND line_key = ? AND hash = ?');
+        $has->execute([$versionId, $line['key'], $hash]);
+        if (!$has->fetchColumn()) {
+            db()->prepare('INSERT INTO vo_takes (version_id, line_key, text, voice_id, model_id, format, hash, bytes, duration_ms, by_name, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$versionId, $line['key'], $line['text'], $voice, $set['model'], $set['format'], $hash, filesize($file), (int)round($dur * 1000), $by, now_iso()]);
+        }
+        return ['hash' => $hash, 'duration' => $dur, 'cached' => true];
     }
     $key = el_tts_key();
     $body = ['text' => $line['text'], 'model_id' => $set['model'],
@@ -301,7 +311,7 @@ function vo_clip_name(array $line, string $tc, string $ext): string
  * that no two clips overlap on one track. $clips: [line, file name, duration seconds]. $folder: where the clips will
  * be on the editing computer ('' leaves the paths relative, and the editing app asks to find the first one).
  */
-function vo_fcp7_xml(string $seqName, array $v, array $clips, string $format, string $folder): string
+function vo_fcp7_xml(string $seqName, array $v, array $clips, string $format, string $folder, ?array $bed = null): string
 {
     $rate = (float)$v['rate'] ?: (float)$v['tc_base'];
     $base = (int)$v['tc_base'] ?: (int)round($rate);
@@ -335,6 +345,8 @@ function vo_fcp7_xml(string $seqName, array $v, array $clips, string $format, st
         return 'file://localhost' . implode('/', array_map('rawurlencode', explode('/', $p))) . '/clips/' . rawurlencode($name);
     };
 
+    $blen = $bed ? max(1, (int)ceil($bed[1] * $rate)) : 0;
+    $end = max($end, $blen);
     $out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">\n";
     $out .= "<sequence id=\"sequence-1\">\n<name>{$x($seqName)}</name>\n<duration>$end</duration>\n$rateXml\n";
     $out .= "<timecode>$rateXml<string>" . frames_to_tc((int)$v['tc_start'], $base) . "</string><frame>" . (int)$v['tc_start'] . "</frame><displayformat>NDF</displayformat></timecode>\n";
@@ -342,6 +354,17 @@ function vo_fcp7_xml(string $seqName, array $v, array $clips, string $format, st
     $out .= "<format><samplecharacteristics><depth>16</depth><samplerate>$sr</samplerate></samplecharacteristics></format>\n";
     $fileN = 0;
     $clipN = 0;
+    if ($bed) {
+        // The rest of the cut's sound (no voice), whole, on the first track under the new VO. $bed: [file name, seconds].
+        [$bname, $bsecs] = $bed;
+        $out .= "<track>\n<clipitem id=\"clipitem-bed\">\n<name>{$x($bname)}</name>\n<enabled>TRUE</enabled>\n<duration>$blen</duration>\n$rateXml\n"
+            . "<start>0</start>\n<end>$blen</end>\n<in>0</in>\n<out>$blen</out>\n"
+            . "<file id=\"file-bed\">\n<name>{$x($bname)}</name>\n<pathurl>{$x($path($bname))}</pathurl>\n$rateXml\n<duration>$blen</duration>\n"
+            . "<media><audio><samplecharacteristics><depth>16</depth><samplerate>44100</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media>\n</file>\n"
+            . "<sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n"
+            . "<comments><mastercomment1>The cut’s sound without the voice (split by ElevenLabs)</mastercomment1></comments>\n</clipitem>\n"
+            . "<enabled>TRUE</enabled>\n<locked>FALSE</locked>\n</track>\n";
+    }
     foreach ($tracks ?: [[]] as $t) {
         $out .= "<track>\n";
         foreach ($t as [$line, $name, $secs, $start, $len]) {

@@ -242,6 +242,7 @@
     if (!src && linked) streamFrameio().catch(fail);
     if (linked && can('editor') && !SHARE && (!S.version.fio_synced_at || Date.now() - new Date(S.version.fio_synced_at) > 5 * 60 * 1000)) syncComments(true).catch(() => {});
     checkJob(id);
+    resetMix();
   }
 
   /* ---------- Frame.io ---------- */
@@ -992,17 +993,19 @@
     $('tlShots').replaceChildren(...shotEls);
     $('tlShots').hidden = !S.shots.length;
     const scriptOn = renderScriptTrack(w, end);
+    renderAudioTrack(w, end);
 
     // Lanes: one per track. A hidden track folds down to a thin row.
     const lanes = trackList();
     // The letters column grows to fit the longest track code (CHART, VFX…).
-    const longest = Math.max(1, ...lanes.map((l) => (l.key || '·').length));
+    const longest = Math.max(1, ...lanes.map((l) => (l.key || '·').length), hasStems(S.version) ? 3 : 1);
     $('tl').style.setProperty('--gutter-w', `${Math.max(22, longest * 8 + 8)}px`);
     $('tlGutter').replaceChildren(...[el('span', { class: 'g-scale' }), S.shots.length ? el('span', { class: 'g-shots', title: 'Shots from the edit' }) : null,
       scriptOn ? el('button', { type: 'button', class: 'g-lane g-script' + (S.hidden.has(SCRIPT_LANE) ? ' off' : '') + (S.scriptTwoRows ? ' two' : ''), style: '--c:var(--tag-n)',
         title: `Script: each line of the new script at its time. Click to ${S.hidden.has(SCRIPT_LANE) ? 'show' : 'hide'}.` + (canTime() ? ' Drag a line to move it, or its edges to change how long it lasts.' : ''),
         'aria-pressed': S.hidden.has(SCRIPT_LANE) ? 'false' : 'true', 'aria-label': 'Script track',
-        onclick: () => { if (S.hidden.has(SCRIPT_LANE)) S.hidden.delete(SCRIPT_LANE); else S.hidden.add(SCRIPT_LANE); saveHidden(); renderTimeline(); }, text: 'TX' }) : null].filter(Boolean),
+        onclick: () => { if (S.hidden.has(SCRIPT_LANE)) S.hidden.delete(SCRIPT_LANE); else S.hidden.add(SCRIPT_LANE); saveHidden(); renderTimeline(); }, text: 'TX' }) : null,
+      ...audioGutter()].filter(Boolean),
       ...lanes.map((l) => el('button', {
         type: 'button', class: 'g-lane' + (S.hidden.has(l.key) ? ' off' : ''), style: `--c:var(--${l.color})`,
         title: `${l.label}: click to ${S.hidden.has(l.key) ? 'show' : 'hide'}, Alt-click to show only this track`,
@@ -1070,6 +1073,311 @@
     moveHead();
   }
 
+  /* ---------- Hearing the voice, the rest, and the new VO ---------- */
+  // Once ElevenLabs has split the cut's sound, it can play as two tracks in step with the picture: the voice (VOX)
+  // and the rest (BG: music, effects, atmos), each of which can be muted. "New VO" plays the takes made in
+  // Voice-over… at their lines' times and takes the old voice out under them (and under crossed-out lines). Without
+  // the split, the old voice can't be taken out, so the cut's sound is turned down there instead.
+  const MIX = { mode: 'orig', mute: { voice: false, rest: false }, els: {}, forVid: null, stemsAt: null, preview: null, previewAt: 0,
+    previewFor: null, ctx: null, buffers: new Map(), playing: new Map(), peaks: new Map(), peakData: new Map() };
+  const STEMS = { voice: { code: 'VOX', label: 'Voice' }, rest: { code: 'BG', label: 'Rest of the sound (music, effects, atmos)' } };
+  const hasStems = (v) => !!v?.stems_at;
+  const withShare = (o) => ({ ...o, ...(SHARE ? { share: SHARE } : {}) });
+  const stemUrl = (v, kind, download) => 'api.php?' + new URLSearchParams(withShare({ action: 'version.stem', version_id: v.id, kind, t: v.stems_at, ...(download ? { download: 1 } : {}) }));
+  const usingStems = () => MIX.mode !== 'orig' && hasStems(S.version);
+  function mixCtx() {
+    if (!MIX.ctx) MIX.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (MIX.ctx.state === 'suspended') MIX.ctx.resume().catch(() => {});
+    return MIX.ctx;
+  }
+  // The two <audio> players for the current version's stems.
+  function mixEls() {
+    const v = S.version;
+    if (MIX.forVid !== v?.id || MIX.stemsAt !== (v?.stems_at || null)) {
+      for (const a of Object.values(MIX.els)) { a.pause(); a.removeAttribute('src'); a.load(); }
+      MIX.els = {};
+      MIX.forVid = v?.id ?? null; MIX.stemsAt = v?.stems_at || null;
+      if (hasStems(v)) for (const k of Object.keys(STEMS)) { const a = new Audio(); a.preload = 'auto'; a.src = stemUrl(v, k); MIX.els[k] = a; }
+    }
+    return MIX.els;
+  }
+  function stopTakes() {
+    for (const p of MIX.playing.values()) { try { p.src?.stop(); } catch { /* already stopped */ } }
+    MIX.playing.clear();
+  }
+  // Keep the stems with the picture: same place, same speed, playing when it plays.
+  function mixSync(hard) {
+    const on = usingStems();
+    video.muted = on;
+    if (!on && video.volume !== 1 && MIX.mode === 'orig') video.volume = 1;
+    for (const a of Object.values(mixEls())) {
+      if (!on || video.paused || video.seeking) {
+        if (!a.paused) a.pause();
+        if (on && (hard || Math.abs(a.currentTime - video.currentTime) > 0.05)) { try { a.currentTime = video.currentTime; } catch { /* not loaded yet */ } }
+        continue;
+      }
+      a.playbackRate = video.playbackRate;
+      if (hard || Math.abs(a.currentTime - video.currentTime) > 0.12) { try { a.currentTime = video.currentTime; } catch { /* not loaded yet */ } }
+      if (a.paused) a.play().catch(() => {});
+    }
+    if (hard || video.paused) stopTakes();
+    mixTick();
+  }
+  // Every frame: which tracks are heard, and start the takes the playhead has reached.
+  function mixTick() {
+    if (MIX.mode === 'orig') return;
+    const out = MIX.mode === 'newvo' && MIX.preview && MIX.preview.mute.find((m) => S.frame >= m[0] && S.frame < m[1]);
+    if (usingStems()) {
+      const { voice, rest } = MIX.els;
+      if (voice) voice.volume = MIX.mute.voice || out ? 0 : 1;
+      if (rest) rest.volume = MIX.mute.rest ? 0 : 1;
+      if (!video.paused) for (const a of [voice, rest]) if (a && !a.paused && Math.abs(a.currentTime - video.currentTime) > 0.15) a.currentTime = video.currentTime;
+    } else {
+      video.volume = out ? 0.15 : 1;
+    }
+    if (MIX.mode === 'newvo' && MIX.preview && !video.paused) playTakesAt(video.currentTime);
+  }
+  function takeUrl(t) { return 'api.php?' + new URLSearchParams(withShare({ action: 'vo.take', version_id: S.versionId, hash: t.hash, format: t.format })); }
+  function takeBuffer(t) {
+    const have = MIX.buffers.get(t.hash);
+    if (have) return have;
+    const p = fetch(takeUrl(t), { credentials: 'same-origin' }).then((r) => { if (!r.ok) throw new Error('take'); return r.arrayBuffer(); })
+      .then((ab) => mixCtx().decodeAudioData(ab));
+    MIX.buffers.set(t.hash, p);
+    p.then((b) => MIX.buffers.set(t.hash, b), () => MIX.buffers.delete(t.hash));
+    return p;
+  }
+  function playTakesAt(sec) {
+    const r = rate();
+    for (const [key, p] of MIX.playing) {
+      if (sec < p.s0 - 0.05 || sec > p.s1 + 0.05) { try { p.src?.stop(); } catch { /* ended */ } MIX.playing.delete(key); }
+    }
+    for (const l of MIX.preview.lines) {
+      if (!l.take) continue;
+      const s0 = l.start / r, s1 = s0 + l.take.duration;
+      if (sec < s0 || sec >= s1 - 0.03 || MIX.playing.has(l.key)) continue;
+      const b = MIX.buffers.get(l.take.hash);
+      if (!(b instanceof AudioBuffer)) { if (!b) takeBuffer(l.take); continue; }
+      const ctx = mixCtx();
+      const src = ctx.createBufferSource();
+      src.buffer = b;
+      src.playbackRate.value = video.playbackRate;
+      src.connect(ctx.destination);
+      src.start(0, Math.max(0, sec - s0));
+      MIX.playing.set(l.key, { src, s0, s1 });
+    }
+  }
+  // The takes nearest the playhead first, a few at a time.
+  async function prefetchTakes() {
+    if (!MIX.preview) return;
+    const now = S.frame;
+    const list = MIX.preview.lines.filter((l) => l.take && !MIX.buffers.has(l.take.hash))
+      .sort((a, b) => (a.start < now) - (b.start < now) || Math.abs(a.start - now) - Math.abs(b.start - now));
+    let i = 0;
+    const worker = async () => { while (i < list.length && MIX.mode === 'newvo') { const l = list[i++]; await Promise.resolve(takeBuffer(l.take)).catch(() => {}); } };
+    await Promise.all([worker(), worker(), worker()]);
+  }
+  async function loadPreview(force) {
+    if (!S.versionId || !S.script.segments.length) { MIX.preview = null; return; }
+    if (!force && MIX.previewFor === S.versionId && Date.now() - MIX.previewAt < 3000) return;
+    let mem = {};
+    try { mem = JSON.parse(ls.get('vo:' + S.filmId) || '{}'); } catch { mem = {}; }
+    const vid = S.versionId;
+    const p = await api('vo.preview', { query: { version_id: vid, drafts: mem.drafts ? '1' : '0' } });
+    if (vid !== S.versionId) return;
+    MIX.preview = p; MIX.previewFor = vid; MIX.previewAt = Date.now();
+    updateHearUI();
+    renderTimeline();
+    prefetchTakes();
+  }
+  function setHear(mode) {
+    if (mode === 'split' && !hasStems(S.version)) mode = 'orig';
+    MIX.mode = mode;
+    if (mode !== 'orig') mixCtx();
+    if (mode === 'orig') { video.volume = 1; video.muted = false; }
+    stopTakes();
+    if (mode === 'newvo') loadPreview(true).catch(fail);
+    mixSync(true);
+    updateHearUI();
+    renderTimeline();
+  }
+  function resetMix() {
+    stopTakes();
+    MIX.preview = null; MIX.previewFor = null;
+    if (MIX.mode === 'split' && !hasStems(S.version)) MIX.mode = 'orig';
+    video.volume = 1; video.muted = false;
+    mixEls();
+    mixSync(true);
+    updateHearUI();
+  }
+  function updateHearUI() {
+    const v = S.version, stems = hasStems(v), tx = !!S.script.segments.length;
+    $('hearRow').hidden = !v || !(stems || tx);
+    for (const b of $('hearSeg').querySelectorAll('button')) {
+      b.setAttribute('aria-checked', String(b.dataset.hear === MIX.mode));
+      b.disabled = (b.dataset.hear === 'split' && !stems) || (b.dataset.hear === 'newvo' && !tx);
+      if (b.dataset.hear === 'split') b.title = stems ? 'The voice and the rest as two tracks (VOX and BG on the timeline); click either to mute it' : 'Split the sound first: Voice & rest…';
+    }
+    $('splitBtn').hidden = !v || !can('editor') || !!SHARE || !(stems || (S.conn.elevenlabs && onServer(v)));
+    $('splitBtn').textContent = stems ? 'Voice & rest ✓' : 'Voice & rest…';
+    const note = $('hearNote');
+    let msg = '';
+    if (MIX.mode === 'newvo') {
+      const p = MIX.preview;
+      if (!p) msg = 'Getting the new VO…';
+      else if (!p.takes) msg = 'No takes yet: make them in Voice-over…, then play.' + (stems ? '' : ' Split the sound (Voice & rest…) to take the old voice out cleanly.');
+      else msg = `${p.takes} line${p.takes === 1 ? '' : 's'} with new VO (♪ on the TX track). ` + (stems ? 'The old voice is taken out under them and under crossed-out lines.' : 'Without the split, the cut’s sound is only turned down under them: Voice & rest… takes the old voice out cleanly.');
+    } else if (MIX.mode === 'split') {
+      msg = 'Voice (VOX) and the rest (BG) are on the timeline: click either to mute it.';
+    }
+    note.textContent = msg;
+    note.hidden = !msg;
+  }
+  // Play the cut with the new VO from a little before its first new take.
+  async function hearNewVoFromStart() {
+    setTab('script');
+    MIX.mode = 'newvo';
+    await loadPreview(true);
+    setHear('newvo');
+    const first = MIX.preview?.lines.find((l) => l.take);
+    if (!first) { toast('No takes yet: make them in Voice-over… first.'); return; }
+    seekFrame(Math.max(0, first.start - Math.round(rate() * 2)));
+    video.play().catch(() => {});
+  }
+  window.__pnMix = MIX;   // for the browser tests
+  function toggleStemMute(k) {
+    MIX.mute[k] = !MIX.mute[k];
+    if (MIX.mode === 'orig') setHear('split'); else { mixTick(); updateHearUI(); renderTimeline(); }
+  }
+
+  // The stems' waveforms, worked out in the browser from a low-rate decode (100 peaks a second).
+  function stemPeaks(v, kind) {
+    const key = `${v.id}:${kind}:${v.stems_at}`;
+    if (MIX.peakData.has(key)) return MIX.peakData.get(key);
+    if (!MIX.peaks.has(key)) {
+      const p = fetch(stemUrl(v, kind), { credentials: 'same-origin' }).then((r) => r.arrayBuffer()).then(async (ab) => {
+        const hz = 3000, per = 30;
+        const buf = await new OfflineAudioContext(1, 1, hz).decodeAudioData(ab);
+        const chs = Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c));
+        const out = new Float32Array(Math.ceil(buf.length / per));
+        for (let i = 0; i < out.length; i++) {
+          let m = 0;
+          for (const ch of chs) for (let j = i * per, e = Math.min(ch.length, j + per); j < e; j++) { const a = Math.abs(ch[j]); if (a > m) m = a; }
+          out[i] = m;
+        }
+        let top = 0; for (const x of out) if (x > top) top = x;
+        return { perSec: hz / per, data: out, top: top || 1 };
+      });
+      MIX.peaks.set(key, p);
+      p.then((d) => { MIX.peakData.set(key, d); if (S.version?.id === v.id) renderTimeline(); }, () => MIX.peakData.set(key, null));
+    }
+    return undefined;
+  }
+  function renderAudioTrack(w, end) {
+    const box = $('tlAudio'), v = S.version;
+    box.hidden = !hasStems(v);
+    if (box.hidden) return false;
+    box.classList.toggle('idle', MIX.mode === 'orig');
+    const dpr = window.devicePixelRatio || 1, r = rate();
+    for (const row of box.querySelectorAll('.tl-wave')) {
+      const kind = row.dataset.kind;
+      row.classList.toggle('muted', MIX.mode !== 'orig' && MIX.mute[kind]);
+      const cv = row.querySelector('canvas');
+      const H = 20;
+      cv.width = Math.max(1, Math.round(w * dpr)); cv.height = H * dpr;
+      const g = cv.getContext('2d');
+      g.clearRect(0, 0, cv.width, cv.height);
+      if (kind === 'voice') g.fillStyle = getComputedStyle(document.body).getPropertyValue('--tag-n').trim() || '#6aa0ff';
+      else g.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted').trim() || '#888';
+      const pk = stemPeaks(v, kind);
+      if (!pk) { g.fillRect(0, cv.height / 2, cv.width, Math.max(1, dpr)); continue; }
+      const framesPerPx = (end - TL.start) / w;
+      for (let x = 0; x < w; x++) {
+        const a = Math.floor(((TL.start + x * framesPerPx) / r) * pk.perSec), b = Math.max(a + 1, Math.floor(((TL.start + (x + 1) * framesPerPx) / r) * pk.perSec));
+        let m = 0;
+        for (let i = Math.max(0, a); i < Math.min(pk.data.length, b); i++) if (pk.data[i] > m) m = pk.data[i];
+        const h = Math.max(dpr, (m / pk.top) * (cv.height - 2));
+        g.fillRect(x * dpr, (cv.height - h) / 2, Math.max(1, dpr), h);
+      }
+    }
+    return true;
+  }
+  function audioGutter() {
+    if (!hasStems(S.version)) return [];
+    return Object.entries(STEMS).map(([k, s]) => el('button', {
+      type: 'button', class: 'g-lane g-audio' + (MIX.mode === 'orig' ? ' idle' : MIX.mute[k] ? ' muted' : ''), style: `--c:var(--${k === 'voice' ? 'tag-n' : 'muted'})`,
+      title: `${s.label}, split by ElevenLabs. Click to ${MIX.mode === 'orig' ? 'hear the voice and the rest separately and mute this one' : MIX.mute[k] ? 'hear it again' : 'mute it'}.`,
+      'aria-pressed': String(!(MIX.mode !== 'orig' && MIX.mute[k])), 'aria-label': `${s.label} track`,
+      onclick: () => toggleStemMute(k), text: s.code,
+    }));
+  }
+
+  // Split the cut's sound into the voice and the rest (editors).
+  const stemsWatched = new Set();
+  async function checkStems(vid, dialogLine) {
+    clearTimeout(S.stemsTimer);
+    let job;
+    try { job = (await api('stems.status', { query: { version_id: vid } })).job; } catch { return; }
+    if (!job) return;
+    const age = Math.round((Date.now() - new Date(job.created_at)) / 1000);
+    const line = dialogLine && dialogLine.isConnected ? dialogLine : null;
+    if (job.status === 'queued' || job.status === 'running') {
+      stemsWatched.add(job.id);
+      if (line) { line.hidden = false; line.className = 'job running'; line.textContent = `${job.message || 'Waiting to start…'} ${fmtClock(age)}`; }
+      S.stemsTimer = setTimeout(() => checkStems(vid, dialogLine), 4000);
+      return;
+    }
+    if (!stemsWatched.has(job.id)) return;
+    stemsWatched.delete(job.id);
+    if (job.status === 'done') {
+      if (line) closeDialog();
+      await loadState({ filmId: S.filmId, versionId: S.versionId });
+      const v = S.versions.find((x) => x.id === vid);
+      if (v && S.version?.id === vid) { S.version.stems_at = v.stems_at; S.version.stems_source = v.stems_source; resetMix(); renderTimeline(); }
+      toast('Voice and rest are ready: VOX and BG on the timeline.', { label: 'Hear the new VO', run: () => { setTab('script'); setHear('newvo'); } });
+    } else {
+      if (line) { line.hidden = false; line.className = 'job error'; line.textContent = job.message; }
+      else toast('Splitting the sound failed: ' + job.message);
+    }
+  }
+  function openSplit() {
+    const v = S.version;
+    if (!v) return;
+    if (!S.conn.elevenlabs) {
+      showDialog({ lightDismiss: true }, el('h2', { text: 'Voice & rest' }), el('p', { text: 'Connect ElevenLabs first: your name’s menu → Settings and connections → ElevenLabs.' }));
+      return;
+    }
+    const src = v.audio_name ? `the uploaded sound (${v.audio_name})` : v.fio_file_id ? `the Frame.io file${v.fio_name ? ' (' + v.fio_name + ')' : ''}` : v.video_url ? 'the video link' : null;
+    const line = el('p', { class: 'job', hidden: true });
+    const start = el('button', { type: 'button', class: 'btn primary', text: hasStems(v) ? 'Split again' : 'Split the sound', disabled: !src, onclick: async () => {
+      start.disabled = true;
+      try {
+        const r = await api('stems.create', { body: { version_id: v.id } });
+        if (!r.already) api('stems.run', { body: { job_id: r.job_id } }).catch(() => { /* the status poll reports problems */ });
+        line.hidden = false; line.className = 'job running'; line.textContent = 'Starting…';
+        stemsWatched.add(r.job_id);
+        checkStems(v.id, line);
+      } catch (e) { start.disabled = false; fail(e); }
+    } });
+    showDialog({ lightDismiss: true },
+      el('h2', { text: `Voice & rest · ${v.label}` }),
+      el('p', { text: 'ElevenLabs splits the cut’s sound into two tracks: the voice (narration and dialogue) and the rest (music, effects, atmos). They appear as VOX and BG on the timeline, and “Hear: New VO” in the Transcript tab plays the new voice-over with the old voice taken out under it.' }),
+      el('p', { class: 'small', text: src ? `It splits ${src}. ElevenLabs charges for this by length (stem separation, from your plan’s credits). A long cut can take several minutes; you can close this and keep working.`
+        : 'There’s nothing on the server to split yet. Upload the cut’s sound (Films & versions → Sound only → Upload…), or link the version to its Frame.io file.' }),
+      hasStems(v) ? el('div', {},
+        el('p', { class: 'small', text: `Split ${fmtDate(v.stems_at)} from ${v.stems_source || 'the cut'}.` }),
+        el('div', { class: 'split-files' },
+          el('a', { class: 'btn ghost', href: stemUrl(v, 'voice', true), text: 'Download the voice (MP3)' }),
+          el('a', { class: 'btn ghost', href: stemUrl(v, 'rest', true), text: 'Download the rest (MP3)' }))) : null,
+      line,
+      el('div', { class: 'dlg-actions' },
+        hasStems(v) ? el('button', { type: 'button', class: 'btn ghost left', text: 'Remove the split', onclick: async () => {
+          try { await api('stems.remove', { body: { version_id: v.id } }); v.stems_at = null; S.version.stems_at = null; closeDialog(); resetMix(); renderTimeline(); toast('Split removed.'); } catch (e) { fail(e); }
+        } }) : null,
+        el('button', { type: 'button', class: 'btn', text: 'Close', onclick: closeDialog }), start));
+    checkStems(v.id, line);
+  }
+
   /* ---------- the Script track: the new script's lines at their times ---------- */
   const SCRIPT_LANE = '__script';
   const canTime = () => canScript() && !!S.scriptEdits.transcriptId && S.script.activeId === S.script.latestId;
@@ -1102,12 +1410,13 @@
     if (S.hidden.has(SCRIPT_LANE)) { box.replaceChildren(); return true; }
     const edit = canTime();
     const kids = [];
+    const voKeys = MIX.mode === 'newvo' && MIX.preview ? new Set(MIX.preview.lines.filter((x) => x.take).map((x) => x.key)) : null;
     for (const l of lines) {
       if (l.end < TL.start || l.start > end) continue;
       const x0 = fx(l.start), width = Math.max(3, fx(l.end) - x0);
       const st = { same: '', draft: 'Draft', approved: 'Approved', cut: 'Crossed out' }[l.state] || '';
       kids.push(el('div', {
-        class: `sl st-${l.state}` + (l.added ? ' added' : '') + (width > 34 ? ' wide' : ''), 'data-key': l.key, 'data-start': l.start,
+        class: `sl st-${l.state}` + (l.added ? ' added' : '') + (width > 34 ? ' wide' : '') + (voKeys?.has(l.key) ? ' vo' : ''), 'data-key': l.key, 'data-start': l.start,
         style: `left:${x0}px;width:${width}px`,
         title: `${tc(l.start)} – ${tc(l.end)} (${fmtDur(l.end - l.start)})${l.added ? ' · new line' : ''}${st ? ' · ' + st : ''}\n${l.text}`
           + (edit ? '\nDrag to move it; drag an edge to change how long it lasts.' : ''),
@@ -1645,6 +1954,7 @@
     moveHead();
     updateActive();
     updateScriptActive();
+    mixTick();
   }
 
   function onFrame(now, meta) {
@@ -1658,6 +1968,9 @@
     requestAnimationFrame(loop);
   }
   ['seeked', 'pause', 'play', 'loadedmetadata', 'timeupdate'].forEach((ev) => video.addEventListener(ev, () => tick()));
+  // The split tracks and new VO follow the picture.
+  video.addEventListener('play', () => { mixSync(true); if (MIX.mode === 'newvo') loadPreview().catch(() => {}); });
+  ['pause', 'seeking', 'seeked', 'ratechange', 'waiting', 'playing'].forEach((ev) => video.addEventListener(ev, () => mixSync(ev !== 'playing' && ev !== 'waiting')));
   video.addEventListener('loadedmetadata', () => { TL.span = 0; renderTimeline(); checkStartTc(); });
   let lastRefetch = 0;
   video.addEventListener('error', () => {
@@ -1898,6 +2211,7 @@
     $('scriptWideBtn').hidden = !sc.segments.length;
     $('scriptDl').hidden = !sc.segments.length || !S.scriptEdits.transcriptId;
     $('voBtn').hidden = $('scriptDl').hidden || !can('editor') || !!SHARE;
+    updateHearUI();
     if (!sc.segments.length) { ol.replaceChildren(); $('caption').hidden = true; return; }
     const keepScroll = ol.scrollTop;
     const rows = [];
@@ -2344,6 +2658,7 @@
       radio('vofmt', 'wav', 'WAV 48 kHz', 'For the edit. Needs an ElevenLabs Pro plan or above.', (mem.format || 'wav') === 'wav'),
       radio('vofmt', 'mp3', 'MP3 44.1 kHz', 'Works on every plan. Fine for a temp track.', mem.format === 'mp3'));
     const folder = el('input', { value: mem.folder || '', placeholder: 'e.g. /Users/you/Film/VO (optional)', spellcheck: false });
+    const withRest = el('input', { type: 'checkbox', checked: mem.rest ?? true });
     const voiceBox = el('div', { class: 'vo-voices' });
     const summary = el('p', { class: 'small' });
     const progress = el('div', { class: 'vo-progress', hidden: true }, el('div', { class: 'bar' }, el('span')), el('p', { class: 'small' }));
@@ -2356,7 +2671,7 @@
     const takes = new Map();   // line key → { hash, duration }
     const current = () => ({
       scope: scope.querySelector('input:checked').value, drafts: drafts.checked, model: model.value, speed: speed.value,
-      format: format.querySelector('input:checked').value, folder: folder.value.trim(),
+      format: format.querySelector('input:checked').value, folder: folder.value.trim(), rest: withRest.checked,
       voices: Object.fromEntries(Object.entries(voiceSel).map(([k, s]) => [k, s.value])),
     });
     const remember = () => { const c = current(); ls.set(memKey, JSON.stringify(c)); return c; };
@@ -2441,12 +2756,13 @@
         : `All ${done} lines are ready (${made} made now, ${reused} already made). Download the clips and the XML.`;
       progress.classList.toggle('err', !!failed);
       renderList();
+      if (MIX.mode === 'newvo') loadPreview(true).catch(() => {});
     });
     stopBtn.addEventListener('click', () => { stop = true; stopBtn.disabled = true; });
     dlBtn.addEventListener('click', () => {
       const c = remember();
       location.href = `api.php?${new URLSearchParams({ action: 'vo.export', version_id: vid, scope: c.scope, drafts: c.drafts ? '1' : '0',
-        voices: JSON.stringify(c.voices), model: c.model, speed: c.speed, format: c.format, folder: c.folder })}`;
+        voices: JSON.stringify(c.voices), model: c.model, speed: c.speed, format: c.format, folder: c.folder, ...(c.rest && hasStems(S.version) ? { rest: 1 } : {}) })}`;
     });
     showDialog(
       el('h2', { text: `Voice-over · ${S.version.label}` }),
@@ -2458,9 +2774,12 @@
       el('h3', { text: 'Files' }), format,
       el('label', {}, 'Folder the clips will be in, on the editing computer', folder,
         el('small', { class: 'hint', text: 'With this, the editing app finds the clips by itself. Without it, it asks you to find the first clip once.' })),
+      hasStems(S.version) ? el('label', { class: 'inline' }, withRest, ' Add the rest of the sound (no voice, from Voice & rest) on its own track under the new VO') : null,
       summary, progress, list,
       el('div', { class: 'dlg-actions' },
         el('button', { type: 'button', class: 'btn ghost left', text: 'Close', onclick: () => { stop = true; closeDialog(); } }),
+        el('button', { type: 'button', class: 'btn ghost', text: 'Hear it in place', title: 'Close this and play the cut with the new VO (Hear: New VO), from the first new line',
+          onclick: () => { stop = true; closeDialog(); hearNewVoFromStart().catch(fail); } }),
         stopBtn, dlBtn, makeBtn));
     await loadPlan();
   }
@@ -3300,6 +3619,7 @@
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
           can('editor') ? 'No picture? Add a version as Sound only (New version… → Picture or sound): the sound file is uploaded, transcribed by ElevenLabs, and plays here like a cut.' : null,
+          'Hear (Transcript tab): Original, Voice + rest (after Voice & rest… has split the sound; click VOX or BG on the timeline to mute either), or New VO, which plays the new takes in place of the old voice.',
           can('editor') ? 'Voice-over… voices the script changes (or the whole script) with ElevenLabs, then downloads one clip per line and an FCP7 XML that places them for Premiere or Resolve.' : null,
           can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as a PDF with the changes highlighted, a spreadsheet or plain text.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,
@@ -3383,6 +3703,8 @@
   $('streamBtn').addEventListener('click', () => streamFrameio().catch(fail));
   $('quality').addEventListener('change', () => streamFrameio(S.frame).catch(fail));
   $('transcribeBtn').addEventListener('click', () => transcribeCurrent().catch(fail));
+  $('splitBtn').addEventListener('click', openSplit);
+  $('hearSeg').addEventListener('click', (e) => { const b = e.target.closest('button[data-hear]'); if (b && !b.disabled) setHear(b.dataset.hear); });
   $('tabNotes').addEventListener('click', () => setTab('notes'));
   $('tabScript').addEventListener('click', () => setTab('script'));
   $('scriptUpload').addEventListener('change', (e) => loadScript(+e.target.value).catch(fail));

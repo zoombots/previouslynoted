@@ -12,6 +12,7 @@ require __DIR__ . '/lib/mail.php';
 require __DIR__ . '/lib/export.php';
 require __DIR__ . '/lib/vo.php';
 require __DIR__ . '/lib/media.php';
+require __DIR__ . '/lib/stems.php';
 
 security_headers();
 
@@ -106,7 +107,7 @@ const ACTION_ROLES = [
     // everyone
     'account' => 'viewer', 'account.update' => 'viewer', 'account.password' => 'viewer',
 ];
-const READ_ACTIONS = ['export.markers', 'fingerprint', 'state', 'notes', 'transcript', 'script', 'script.export', 'version.media', 'version.audio', 'transcribe.status', 'export'];
+const READ_ACTIONS = ['export.markers', 'fingerprint', 'state', 'notes', 'transcript', 'script', 'script.export', 'version.media', 'version.audio', 'version.stem', 'vo.preview', 'vo.take', 'stems.status', 'transcribe.status', 'export'];
 
 /** Email an invite or reset link when asked and email is set up. Returns [sent, error message]. */
 function send_account_link(array $person, string $kind, string $link, string $expires, array $by, bool $wanted): array
@@ -276,7 +277,7 @@ switch ("$method $action") {
         $only = $share ? ' WHERE v.id IN (' . implode(',', share_version_ids($share)) . ')' : '';
         $versions = $pdo->query(
             'SELECT v.id, v.film_id, v.label, v.color, v.tc_base, v.tc_start, v.rate, v.frameio_url, v.video_url, v.carried_from,
-                    v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id, v.audio_name, v.audio_size,
+                    v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id, v.audio_name, v.audio_size, v.stems_at, v.stems_source,
                     (SELECT COUNT(*) FROM positions p WHERE p.version_id = v.id) AS note_count,
                     (SELECT COUNT(*) FROM transcripts t WHERE t.version_id = v.id) AS transcript_count
              FROM versions v' . $only . ' ORDER BY v.film_id, v.id'
@@ -461,6 +462,12 @@ switch ("$method $action") {
         $pdo->commit();
         @unlink(DATA_DIR . "/fingerprints/$vid.bin");
         audio_remove_files($vid);
+        stems_remove($vid);
+        // Its voice-over takes too: version ids can be used again, and old takes mustn't turn up on a new version.
+        foreach (glob(DATA_DIR . "/vo/$vid/*") ?: [] as $f) {
+            @unlink($f);
+        }
+        @rmdir(DATA_DIR . "/vo/$vid");
         json_out(['ok' => true]);
 
     case 'POST version.import':
@@ -1279,7 +1286,9 @@ switch ("$method $action") {
         }
         $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
         $base = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label']) . '_VO' . ($scope === 'changes' ? '_changes' : '');
-        $xml = vo_fcp7_xml("$film · {$v['label']} · new VO" . ($scope === 'changes' ? ' (changes)' : ''), $v, array_map(fn($c) => array_slice($c, 0, 3), $clips), $set['format'], (string)($in['folder'] ?? ''));
+        // With the sound split, the rest of it (no voice) can go under the new VO on its own track.
+        $bed = !empty($in['rest']) && stems_ready($vid) ? [$base . '_REST_no_voice.mp3', mp3_duration((string)file_get_contents(stem_path($vid, 'rest')))] : null;
+        $xml = vo_fcp7_xml("$film · {$v['label']} · new VO" . ($scope === 'changes' ? ' (changes)' : ''), $v, array_map(fn($c) => array_slice($c, 0, 3), $clips), $set['format'], (string)($in['folder'] ?? ''), $bed);
         $list = "$film · {$v['label']} · new voice-over\nMade " . gmdate('Y-m-d H:i') . " UTC with ElevenLabs ({$set['model']}).\n\n";
         foreach ($clips as [$line, $name, $secs]) {
             $list .= sprintf("%s  %s  %5.1fs  %s%s\n    %s\n\n", $name, frames_to_tc($line['start'] + (int)$v['tc_start'], (int)$v['tc_base']), $secs,
@@ -1293,6 +1302,10 @@ switch ("$method $action") {
         foreach ($clips as [$line, $name, $secs, $file]) {
             $zip->addFile($file, "$base/clips/$name");
             $zip->setCompressionName("$base/clips/$name", ZipArchive::CM_STORE);   // audio doesn't compress; store it
+        }
+        if ($bed) {
+            $zip->addFile(stem_path($vid, 'rest'), "$base/clips/{$bed[0]}");
+            $zip->setCompressionName("$base/clips/{$bed[0]}", ZipArchive::CM_STORE);
         }
         $zip->close();
         header('Content-Type: application/zip');
@@ -1699,6 +1712,9 @@ switch ("$method $action") {
         }
         audio_remove_files_except($vid, $part);
         rename($part, media_dir() . "/$vid.$ext");
+        if (str_starts_with((string)$v['stems_source'], 'the uploaded sound')) {
+            stems_remove($vid);   // split from the old sound: out of date now
+        }
         $pdo->prepare('UPDATE versions SET audio_name = ?, audio_ext = ?, audio_size = ? WHERE id = ?')->execute([$name, $ext, $total, $vid]);
         json_out(['received' => $have, 'done' => true, 'audio_name' => $name, 'audio_size' => $total]);
 
@@ -1713,6 +1729,91 @@ switch ("$method $action") {
         $v = version_row(int_in($in, 'version_id'));
         $path = audio_path($v) ?? fail('This version has no sound file on the server.', 404);
         send_file_ranged($path, AUDIO_TYPES[$v['audio_ext']] ?? 'application/octet-stream');
+
+    case 'GET version.stem':
+        // The voice, or the rest of the sound, as split by ElevenLabs.
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        $kind = isset(STEM_KINDS[$in['kind'] ?? '']) ? $in['kind'] : fail('Which stem?');
+        $path = stem_path($vid, $kind);
+        if (!is_file($path)) {
+            fail('This version’s sound hasn’t been split yet.', 404);
+        }
+        if (!empty($in['download'])) {
+            $film = $pdo->query('SELECT name FROM films WHERE id = ' . (int)$v['film_id'])->fetchColumn();
+            $name = preg_replace('/[^A-Za-z0-9_\-]+/', '_', $film . '_' . $v['label'] . '_' . ($kind === 'voice' ? 'VOICE' : 'REST_no_voice')) . '.mp3';
+            header('Content-Disposition: attachment; filename="' . $name . '"');
+        }
+        send_file_ranged($path, 'audio/mpeg');
+
+    /* ---------------- Split the voice from the rest with ElevenLabs (lib/stems.php) ---------------- */
+
+    case 'POST stems.create':
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        if (!el_configured()) {
+            fail('Add the ElevenLabs API key in Settings first.');
+        }
+        if (!stems_source_label($v)) {
+            fail('Splitting needs the cut’s sound on the server: upload its sound, or link the version to its Frame.io file, first.');
+        }
+        $busy = $pdo->prepare("SELECT id FROM jobs WHERE version_id = ? AND kind = 'stems' AND status IN ('queued','running') AND updated_at > ?");
+        $busy->execute([$vid, gmdate('Y-m-d\TH:i:s\Z', time() - 60 * 60)]);
+        if ($id = $busy->fetchColumn()) {
+            json_out(['job_id' => (int)$id, 'already' => true]);
+        }
+        $pdo->prepare("INSERT INTO jobs (version_id, kind, status, created_by, created_at, updated_at) VALUES (?, 'stems', 'queued', ?, ?, ?)")
+            ->execute([$vid, $user, now_iso(), now_iso()]);
+        json_out(['job_id' => (int)$pdo->lastInsertId()]);
+
+    case 'POST stems.run':
+        $jid = int_in($in, 'job_id');
+        $claim = $pdo->prepare("UPDATE jobs SET status = 'running', message = ?, updated_at = ? WHERE id = ? AND status = 'queued' AND kind = 'stems'");
+        $claim->execute(['Starting…', now_iso(), $jid]);
+        if ($claim->rowCount() !== 1) {
+            json_out(['ok' => true, 'already' => true]);
+        }
+        respond_then_continue(['ok' => true]);
+        $set = function (string $status, string $message, ?array $result = null) use ($pdo, $jid) {
+            $pdo->prepare('UPDATE jobs SET status = ?, message = ?, result = ?, updated_at = ? WHERE id = ?')
+                ->execute([$status, $message, $result ? json_encode($result) : null, now_iso(), $jid]);
+        };
+        try {
+            $job = $pdo->query('SELECT * FROM jobs WHERE id = ' . $jid)->fetch();
+            $r = stems_make(version_row((int)$job['version_id']), fn($m) => $set('running', $m), (string)$job['created_by']);
+            $set('done', 'Split from ' . $r['source'] . '.', $r);
+        } catch (Throwable $e) {
+            error_log('[previouslynoted] stems: ' . $e->getMessage());
+            $set('error', $e instanceof RuntimeException && !$e instanceof PDOException ? $e->getMessage() : 'Splitting failed on the server. Details are in the PHP error log.');
+        }
+        exit;
+
+    case 'GET stems.status':
+        $vid = int_in($in, 'version_id');
+        $st = $pdo->prepare("SELECT * FROM jobs WHERE version_id = ? AND kind = 'stems' ORDER BY id DESC LIMIT 1");
+        $st->execute([$vid]);
+        $job = $st->fetch();
+        if ($job && in_array($job['status'], ['queued', 'running'], true) && strtotime($job['updated_at']) < time() - 60 * 60) {
+            $pdo->prepare("UPDATE jobs SET status = 'error', message = ? WHERE id = ?")
+                ->execute(['The server stopped before the split finished (shared hosting may limit long requests). Try again with the cut’s sound uploaded as an MP3.', $job['id']]);
+            $st->execute([$vid]);
+            $job = $st->fetch();
+        }
+        json_out(['job' => $job ? ['id' => (int)$job['id'], 'status' => $job['status'], 'message' => $job['message'],
+            'result' => $job['result'] ? json_decode($job['result'], true) : null, 'created_at' => $job['created_at'], 'created_by' => $job['created_by']] : null]);
+
+    case 'POST stems.remove':
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        stems_remove($vid);
+        json_out(['ok' => true]);
+
+    case 'GET vo.preview':
+        // For "Hear the new VO": the takes to play and the stretches of the old voice to take out.
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        $t = active_transcript($vid) ?? fail('This version has no transcript yet.', 404);
+        json_out(vo_preview($vid, $t, ($in['drafts'] ?? '1') !== '0') + ['stems' => stems_ready($vid)]);
 
     case 'GET version.media':
         $v = version_row(int_in($in, 'version_id'));

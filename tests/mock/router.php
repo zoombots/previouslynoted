@@ -86,6 +86,22 @@ if (preg_match('#^/v1/(voices|models)$#', $path, $m) && $method === 'GET') {
         ['model_id' => 'eleven_v3', 'name' => 'Eleven v3', 'can_do_text_to_speech' => true],
         ['model_id' => 'scribe_v2', 'name' => 'Scribe v2', 'can_do_text_to_speech' => false]]);
 }
+/* ---------- ElevenLabs stem separation: a zip with the vocals and the rest ---------- */
+if ($path === '/v1/music/stem-separation' && $method === 'POST') {
+    if (!in_array($_SERVER['HTTP_XI_API_KEY'] ?? '', ['el-test-key'], true)) out(['detail' => ['status' => 'missing_permissions', 'message' => 'The API key you used is missing the permission music_generation to execute this operation.']], 401);
+    logline('  stems variation=' . ($_POST['stem_variation_id'] ?? '?') . ' file=' . ($_FILES['file']['name'] ?? '-') . ' bytes=' . ($_FILES['file']['size'] ?? 0) . ' fmt=' . ($_GET['output_format'] ?? '?'));
+    file_put_contents(__DIR__ . '/stems_req.txt', ($_FILES['file']['name'] ?? '-') . ' ' . ($_FILES['file']['size'] ?? 0) . ' ' . ($_POST['stem_variation_id'] ?? '?'));
+    if (empty($_FILES['file']['size'])) out(['detail' => [['loc' => ['body', 'file'], 'msg' => 'Field required', 'type' => 'missing']]], 422);
+    $tmp = tempnam(sys_get_temp_dir(), 'mz');
+    $z = new ZipArchive(); $z->open($tmp, ZipArchive::OVERWRITE);
+    $z->addFile(__DIR__ . '/tone.mp3', 'stems/vocals.mp3');
+    $z->addFile(__DIR__ . '/rest.mp3', 'stems/instrumental.mp3');
+    $z->close();
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="stems.zip"');
+    readfile($tmp); unlink($tmp); exit;
+}
+
 if (preg_match('#^/v1/text-to-speech/([^/]+)/with-timestamps$#', $path, $m) && $method === 'POST') {
     el_tts_key_check('text_to_speech');
     $b = json_decode(file_get_contents('php://input'), true) ?: [];
