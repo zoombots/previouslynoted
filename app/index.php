@@ -369,8 +369,9 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
         <p>Open the video for this version to play it with the notes.</p>
         <div class="screen-actions">
           <button class="btn primary" type="button" id="streamBtn" hidden>Stream from Frame.io</button>
-          <label class="btn primary" id="openFileBtn">Open a video file<input type="file" id="fileInput" accept="video/*,.mp4,.mov,.m4v" hidden></label>
+          <label class="btn primary" id="openFileBtn">Open a video file<input type="file" id="fileInput" accept="video/*,.mp4,.mov,.m4v,audio/*" hidden></label>
           <button class="btn" type="button" id="urlBtn">Use a video link</button>
+          <label class="btn" id="soundBtn" hidden title="For a cut without picture. The sound is uploaded so everyone can play it and ElevenLabs can transcribe it.">Upload sound only<input type="file" id="soundInput" accept="audio/*,.wav,.mp3,.m4a,.aac,.aif,.aiff,.flac,.ogg,.opus" hidden></label>
         </div>
         <p class="screen-why" id="screenWhy" role="alert" hidden></p>
         <p class="hint">The file plays from your computer and is never uploaded. Download the version from Frame.io first.</p>
@@ -379,6 +380,7 @@ page_head($share ? $share['film_name'] . ' · ' . $share['version_label'] : $cfg
           <button class="btn ghost" type="button" id="keepVideoBtn" hidden>Keep the current video</button>
         </div>
       </div>
+      <div class="screen-sound" id="screenSound" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg><strong>Sound only</strong><small id="screenSoundName"></small></div>
       <div class="screen-notes" id="screenNotes" aria-hidden="true"></div>
       <button class="btn change-video" type="button" id="changeVideoBtn" title="Open a different video for this version">Change video</button>
     </div>

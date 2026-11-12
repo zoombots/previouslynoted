@@ -10,7 +10,7 @@ define('APP_ROOT', dirname(__DIR__));
 define('DATA_DIR', APP_ROOT . '/data');
 define('CONFIG_FILE', DATA_DIR . '/config.php');
 define('DB_FILE', DATA_DIR . '/notes.sqlite');
-define('APP_VERSION', '0.7.21');
+define('APP_VERSION', '0.7.22');
 // Revision colours in the order a production uses them for new drafts.
 const REVISION_COLORS = ['white', 'blue', 'pink', 'yellow', 'green', 'goldenrod', 'buff', 'salmon', 'cherry', 'tan'];
 /** The colour for the next version of a film: the next one along from the colours its versions already have. */
@@ -345,6 +345,13 @@ SQL);
         line_key TEXT NOT NULL, text TEXT NOT NULL, voice_id TEXT NOT NULL, model_id TEXT NOT NULL, format TEXT NOT NULL,
         hash TEXT NOT NULL, bytes INTEGER NOT NULL, duration_ms INTEGER NOT NULL, by_name TEXT NOT NULL, at TEXT NOT NULL)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS vo_takes_v ON vo_takes(version_id, hash)');
+    // 0.7.22: sound-only versions: an audio file uploaded to the server (data/media/<version id>.<ext>).
+    $vcols = array_column($pdo->query('PRAGMA table_info(versions)')->fetchAll(), 'name');
+    foreach (['audio_name' => 'TEXT', 'audio_ext' => 'TEXT', 'audio_size' => 'INTEGER'] as $col => $type) {
+        if (!in_array($col, $vcols, true)) {
+            $pdo->exec("ALTER TABLE versions ADD COLUMN $col $type");
+        }
+    }
     // 0.7.17: links that also show the film's earlier versions.
     if (!in_array('show_older', array_column($pdo->query('PRAGMA table_info(shares)')->fetchAll(), 'name'), true)) {
         $pdo->exec('ALTER TABLE shares ADD COLUMN show_older INTEGER NOT NULL DEFAULT 0');

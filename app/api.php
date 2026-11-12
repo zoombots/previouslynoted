@@ -11,6 +11,7 @@ require __DIR__ . '/lib/script.php';
 require __DIR__ . '/lib/mail.php';
 require __DIR__ . '/lib/export.php';
 require __DIR__ . '/lib/vo.php';
+require __DIR__ . '/lib/media.php';
 
 security_headers();
 
@@ -105,7 +106,7 @@ const ACTION_ROLES = [
     // everyone
     'account' => 'viewer', 'account.update' => 'viewer', 'account.password' => 'viewer',
 ];
-const READ_ACTIONS = ['export.markers', 'fingerprint', 'state', 'notes', 'transcript', 'script', 'script.export', 'version.media', 'transcribe.status', 'export'];
+const READ_ACTIONS = ['export.markers', 'fingerprint', 'state', 'notes', 'transcript', 'script', 'script.export', 'version.media', 'version.audio', 'transcribe.status', 'export'];
 
 /** Email an invite or reset link when asked and email is set up. Returns [sent, error message]. */
 function send_account_link(array $person, string $kind, string $link, string $expires, array $by, bool $wanted): array
@@ -275,7 +276,7 @@ switch ("$method $action") {
         $only = $share ? ' WHERE v.id IN (' . implode(',', share_version_ids($share)) . ')' : '';
         $versions = $pdo->query(
             'SELECT v.id, v.film_id, v.label, v.color, v.tc_base, v.tc_start, v.rate, v.frameio_url, v.video_url, v.carried_from,
-                    v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id,
+                    v.fio_file_id, v.fio_stack_id, v.fio_name, v.fio_synced_at, v.fio_account_id, v.audio_name, v.audio_size,
                     (SELECT COUNT(*) FROM positions p WHERE p.version_id = v.id) AS note_count,
                     (SELECT COUNT(*) FROM transcripts t WHERE t.version_id = v.id) AS transcript_count
              FROM versions v' . $only . ' ORDER BY v.film_id, v.id'
@@ -310,7 +311,8 @@ switch ("$method $action") {
         json_out(['user' => $user, 'me' => user_public($me), 'films' => $films, 'versions' => $versions, 'statuses' => STATUSES,
             'guest' => $share ? ['name' => $user, 'view' => $share['view'], 'can_comment' => (bool)$share['can_comment'], 'can_script' => (bool)$share['can_script']] : null,
             'connections' => ['frameio' => fio_configured() && !empty(conn_reload()['fio_account_id']), 'elevenlabs' => !$share && el_configured(),
-                'mail' => !$share && mail_configured() ? conn_reload()['smtp_from'] : null]]);
+                'mail' => !$share && mail_configured() ? conn_reload()['smtp_from'] : null],
+            'upload_chunk' => upload_chunk_bytes()]);
 
     /* ---------- share links for people outside the team (editors) ---------- */
     case 'GET shares':
@@ -458,6 +460,7 @@ switch ("$method $action") {
         $pdo->prepare('DELETE FROM versions WHERE id = ?')->execute([$vid]);
         $pdo->commit();
         @unlink(DATA_DIR . "/fingerprints/$vid.bin");
+        audio_remove_files($vid);
         json_out(['ok' => true]);
 
     case 'POST version.import':
@@ -1653,6 +1656,64 @@ switch ("$method $action") {
         $pdo->prepare('UPDATE versions SET fio_synced_at = ? WHERE id = ?')->execute([now_iso(), $vid]);
         json_out($stats + ['total' => count($got['comments']), 'sample_timestamp' => $got['sample']]);
 
+    /* ---------------- Sound-only versions (lib/media.php) ---------------- */
+
+    case 'POST version.audio':
+        // One chunk of a sound file, in order. The last one puts the file in place.
+        $vid = int_in($in, 'version_id');
+        $v = version_row($vid);
+        $total = (int)($in['total'] ?? 0);
+        $offset = (int)($in['offset'] ?? -1);
+        $name = mb_substr(trim(basename(str_replace('\\', '/', (string)($in['name'] ?? '')))), 0, 200);
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if (!isset(AUDIO_TYPES[$ext])) {
+            fail('Choose a sound file: WAV, MP3, M4A, AAC, AIFF, FLAC or OGG.');
+        }
+        if ($total <= 0 || $total > AUDIO_MAX_BYTES) {
+            fail('That sound file is too large (2 GB at most). Export it as MP3 or a smaller WAV.');
+        }
+        $f = $_FILES['chunk'] ?? null;
+        if (!$f || $f['error'] !== UPLOAD_ERR_OK) {
+            fail($f && in_array($f['error'], [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                ? 'The server refused a piece of the upload as too large. Reload the page and try again.'
+                : 'Part of the upload didn’t arrive. Try again.');
+        }
+        $part = media_dir() . "/$vid.part";
+        $have = $offset === 0 ? 0 : (is_file($part) ? filesize($part) : 0);
+        if ($offset !== $have) {
+            fail('The upload got out of step. Start it again.', 409);
+        }
+        if ($have + (int)$f['size'] > $total) {
+            fail('The upload is larger than the file. Start it again.', 409);
+        }
+        if ($offset === 0 && is_file($part)) {
+            @unlink($part);
+        }
+        if (file_put_contents($part, fopen($f['tmp_name'], 'rb'), FILE_APPEND) === false) {
+            fail('The server couldn’t save the upload. Check there is space left on the hosting account.', 500);
+        }
+        clearstatcache();
+        $have = filesize($part);
+        if ($have < $total) {
+            json_out(['received' => $have]);
+        }
+        audio_remove_files_except($vid, $part);
+        rename($part, media_dir() . "/$vid.$ext");
+        $pdo->prepare('UPDATE versions SET audio_name = ?, audio_ext = ?, audio_size = ? WHERE id = ?')->execute([$name, $ext, $total, $vid]);
+        json_out(['received' => $have, 'done' => true, 'audio_name' => $name, 'audio_size' => $total]);
+
+    case 'POST version.audio.remove':
+        $vid = int_in($in, 'version_id');
+        version_row($vid);
+        audio_remove_files($vid);
+        $pdo->prepare('UPDATE versions SET audio_name = NULL, audio_ext = NULL, audio_size = NULL WHERE id = ?')->execute([$vid]);
+        json_out(['ok' => true]);
+
+    case 'GET version.audio':
+        $v = version_row(int_in($in, 'version_id'));
+        $path = audio_path($v) ?? fail('This version has no sound file on the server.', 404);
+        send_file_ranged($path, AUDIO_TYPES[$v['audio_ext']] ?? 'application/octet-stream');
+
     case 'GET version.media':
         $v = version_row(int_in($in, 'version_id'));
         if (!$v['fio_file_id']) {
@@ -1669,8 +1730,8 @@ switch ("$method $action") {
         if (!el_configured()) {
             fail('Add the ElevenLabs API key in Settings first.');
         }
-        if (!$v['fio_file_id'] && !$v['video_url']) {
-            fail('Transcription needs the video online: link this version to its Frame.io file (or give it a video link) first.');
+        if (!$v['fio_file_id'] && !$v['video_url'] && !audio_path($v)) {
+            fail('Transcription needs the cut on the server: link this version to its Frame.io file, give it a video link, or upload its sound.');
         }
         $busy = $pdo->prepare("SELECT id FROM jobs WHERE version_id = ? AND kind = 'transcribe' AND status IN ('queued','running') AND updated_at > ?");
         $busy->execute([$vid, gmdate('Y-m-d\TH:i:s\Z', time() - 45 * 60)]);
@@ -1797,9 +1858,11 @@ function run_transcription(int $jobId): void
         $v = version_row((int)$job['version_id']);
         $film = $pdo->query('SELECT keyterms FROM films WHERE id = ' . (int)$v['film_id'])->fetch();
         $terms = array_values(array_filter(explode("\n", (string)($film['keyterms'] ?? ''))));
-        $source = $v['fio_file_id'] ? fio_media($v['fio_file_id'], 'efficient', $v['fio_account_id'] ?: null)['url'] : $v['video_url'];
-        $set('running', 'ElevenLabs is transcribing the cut…');
-        $res = el_transcribe($source, $terms);
+        // An uploaded sound file goes to ElevenLabs itself; otherwise ElevenLabs fetches the video from its link.
+        $audio = audio_path($v);
+        $source = $audio ? '' : ($v['fio_file_id'] ? fio_media($v['fio_file_id'], 'efficient', $v['fio_account_id'] ?: null)['url'] : $v['video_url']);
+        $set('running', $audio ? 'Sending the sound to ElevenLabs…' : 'ElevenLabs is transcribing the cut…');
+        $res = el_transcribe($source, $terms, $audio);
         if (!$res['words']) {
             throw new ConnectError('ElevenLabs returned no words. Check the file has audio.');
         }

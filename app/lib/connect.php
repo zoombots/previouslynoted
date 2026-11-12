@@ -96,6 +96,61 @@ function http_call(string $method, string $url, array $headers = [], array|strin
     return [$status, is_array($json) ? $json : null, (string)$raw, $respHeaders];
 }
 
+/** POST a body made of a text head, a file read from disk, and a text tail, without loading the file into memory. */
+function http_post_stream(string $url, array $headers, string $head, string $file, string $tail, int $timeout = 30): array
+{
+    if (!function_exists('curl_init')) {
+        throw new ConnectError('The PHP curl extension is off. Turn it on in cPanel → Select PHP Version → Extensions.');
+    }
+    $fh = fopen($file, 'rb');
+    if (!$fh) {
+        throw new ConnectError('The sound file couldn’t be read on the server.');
+    }
+    $parts = [$head, $fh, $tail];
+    $size = strlen($head) + filesize($file) + strlen($tail);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_UPLOAD => true,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_INFILESIZE => $size,
+        CURLOPT_READFUNCTION => function ($ch, $in, $len) use (&$parts) {
+            while ($parts) {
+                if (is_string($parts[0])) {
+                    if ($parts[0] === '') {
+                        array_shift($parts);
+                        continue;
+                    }
+                    $out = substr($parts[0], 0, $len);
+                    $parts[0] = (string)substr($parts[0], strlen($out));
+                    return $out;
+                }
+                $out = fread($parts[0], $len);
+                if ($out !== false && $out !== '') {
+                    return $out;
+                }
+                fclose(array_shift($parts));
+            }
+            return '';
+        },
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_HTTPHEADER => array_merge($headers, ['Expect:', 'Content-Length: ' . $size]),
+        CURLOPT_USERAGENT => 'PreviouslyNoted/' . APP_VERSION,
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        $err = curl_error($ch);
+        curl_close($ch);
+        throw new ConnectError('Couldn’t reach ' . parse_url($url, PHP_URL_HOST) . " ($err). Check the server’s internet access and try again.");
+    }
+    $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+    $json = json_decode((string)$raw, true);
+    return [$status, is_array($json) ? $json : null, (string)$raw, []];
+}
+
 function api_error_text(?array $json, string $raw): string
 {
     if ($json) {
@@ -618,7 +673,7 @@ function el_configured(): bool
  * Transcribe a hosted media file. Waits for the result (can take minutes for a long cut).
  * Fields are sent as multipart/form-data, with list values repeated as the API expects.
  */
-function el_transcribe(string $sourceUrl, array $keyterms = []): array
+function el_transcribe(string $sourceUrl, array $keyterms = [], ?string $file = null): array
 {
     $c = conn_reload();
     if (empty($c['el_key'])) {
@@ -626,7 +681,6 @@ function el_transcribe(string $sourceUrl, array $keyterms = []): array
     }
     $fields = [
         ['model_id', $c['el_model'] ?? 'scribe_v2'],
-        ['source_url', $sourceUrl],
         ['timestamps_granularity', 'word'],
         ['diarize', ($c['el_diarize'] ?? true) ? 'true' : 'false'],
         ['tag_audio_events', 'false'],
@@ -637,17 +691,24 @@ function el_transcribe(string $sourceUrl, array $keyterms = []): array
     foreach (array_slice($keyterms, 0, 1000) as $k) {
         $fields[] = ['keyterms', $k];
     }
+    if ($file === null) {
+        $fields[] = ['source_url', $sourceUrl];
+    }
     $boundary = '----PreviouslyNoted' . bin2hex(random_bytes(8));
     $body = '';
     foreach ($fields as [$name, $value]) {
         $body .= "--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n";
     }
-    $body .= "--$boundary--\r\n";
-    [$status, $json, $raw] = http_call('POST', el_base() . '/v1/speech-to-text', [
-        'xi-api-key: ' . $c['el_key'],
-        'Content-Type: multipart/form-data; boundary=' . $boundary,
-        'Accept: application/json',
-    ], $body, 3600);
+    $headers = ['xi-api-key: ' . $c['el_key'], 'Content-Type: multipart/form-data; boundary=' . $boundary, 'Accept: application/json'];
+    if ($file === null) {
+        $body .= "--$boundary--\r\n";
+        [$status, $json, $raw] = http_call('POST', el_base() . '/v1/speech-to-text', $headers, $body, 3600);
+    } else {
+        // The sound file itself: the request is streamed from disk, so a long WAV doesn't have to fit in memory.
+        $name = str_replace(['"', "\r", "\n"], '', basename($file));
+        $head = $body . "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\nContent-Type: application/octet-stream\r\n\r\n";
+        [$status, $json, $raw] = http_post_stream(el_base() . '/v1/speech-to-text', $headers, $head, $file, "\r\n--$boundary--\r\n", 3600);
+    }
     if ($status !== 200 || !is_array($json)) {
         $why = api_error_text($json, $raw);
         throw new ConnectError(match (true) {

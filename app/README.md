@@ -217,6 +217,17 @@ Limits: a held picture (a title, a still) only has its look and its cuts to go o
 
 Accepted: `.srt`, `.vtt`, and text transcripts with a timecode at the start of each line or block (Premiere's transcript export, `[00:01:22]` style, or Otter/Descript's "Speaker  0:05" style). Transcripts that start at 01:00:00:00 are shifted to the start of the cut automatically. Each upload is kept; the newest one is used for placement, and older ones can be viewed or deleted from the Transcript tab.
 
+### Sound-only cuts (no picture)
+
+For a cut that is only sound (a radio edit, a narration record, a temp mix), so you can turn it into a script, rewrite it, and voice it again:
+
+1. In **New version…** (or Films & versions → **Add a new cut…**), set **Picture or sound** to **Sound only** and choose the sound file: WAV, MP3, M4A, AAC, AIFF, FLAC or OGG, up to 2 GB. For a new film, **New film…** then leads straight to its first cut.
+2. The file is uploaded to the server in pieces, with a progress bar (shared hosting takes only a few MB per request, so long WAVs work too). Tick **Transcribe it with ElevenLabs once it's uploaded** and the script appears in the Transcript tab when it's done (ElevenLabs gets the sound file itself; nothing needs to be on Frame.io).
+3. The player shows **Sound only** where the picture would be, and everyone on the version (and guests on a share link) can play it, with the timeline, TX track and notes as usual.
+4. Rewrite, cross out and add lines, then **Voice-over…** voices the new script with the voices you pick and downloads one clip per line with an FCP7 XML, as for any cut.
+
+An existing version can get its sound later: **Upload sound only** on the empty player, or **Sound only → Upload…** in Films & versions (**Replace…** and **Remove** are there too). Opening a sound file from your computer with **Open a video file** also works for listening, but it isn't uploaded, so it can't be transcribed. Sound files live in `data/media/`.
+
 ### On a phone or tablet
 
 In a narrow window the screen becomes one column for live review: the picture and the play controls stay pinned at the top while you scroll, the note playing now sits right under them, then the notes list (which follows playback inside its own box, so the page never jumps), then the timeline.
@@ -279,7 +290,7 @@ Each version has a frame rate (Films & versions). It defaults to 24. If your fil
 
 ### Video formats
 
-Browsers play H.264 MP4 (Frame.io's downloads and proxies are fine). ProRes and DNxHD won't play in a browser; use the Frame.io proxy instead.
+Browsers play H.264 MP4 (Frame.io's downloads and proxies are fine). ProRes and DNxHD won't play in a browser; use the Frame.io proxy instead. For sound-only cuts, WAV and MP3 play everywhere; AIFF doesn't play in most browsers (it can still be transcribed).
 
 ## Email (invites and password resets)
 
@@ -314,7 +325,7 @@ The icon is a note carried forward: the outline behind is the previous cut, the 
 
 ## Backups
 
-Everything lives in `data/notes.sqlite`. Download it now and then from File Manager, or include it in cPanel → **Backup**. To restore, put the file back in `data/`.
+Everything lives in `data/notes.sqlite`, plus the uploaded sound of sound-only cuts in `data/media/` and voice-over takes in `data/vo/`. Download it now and then from File Manager, or include it in cPanel → **Backup**. To restore, put the file back in `data/`.
 
 `data/config.php` holds the app name; passwords are stored only as hashes in the database. `data/connections.php` holds the Frame.io and ElevenLabs credentials (never sent to browsers).
 
@@ -327,7 +338,7 @@ Everything lives in `data/notes.sqlite`. Download it now and then from File Mana
 - Each account locks for 10 minutes after 5 wrong passwords, and repeated attempts from one browser are slowed. Sessions last 14 days; changing a password, a reset, or turning an account off ends that person's other sessions straight away.
 - Only admins can connect Frame.io or ElevenLabs or see their settings.
 - `data/` and `lib/` are blocked from the web by `.htaccess`. The installer tests this on your server. Pages ask search engines not to index them.
-- Comment text is all the server stores. Video never leaves the reviewer's machine unless you paste a link.
+- Comment text is all the server stores. Video never leaves the reviewer's machine unless you paste a link. The exception is the sound file of a sound-only cut, which you upload on purpose; it's served only to signed-in people and that version's share links.
 
 ## Files
 

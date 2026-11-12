@@ -16,6 +16,7 @@
 /tests/mock/*.log
 /tests/mock/tokens.txt
 /tests/mock/tts.txt
+/tests/mock/stt_file.txt
 /tests/mock/user.json
 /tests/match-bench/*.g64
 /tests/match-bench/*.webm

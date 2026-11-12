@@ -118,7 +118,11 @@ if ($path === '/v1/speech-to-text' && $method === 'POST') {
     $raw = file_get_contents('php://input');
     preg_match_all('/name="keyterms"\r\n\r\n([^\r]*)/', $raw, $kt);
     logline('  model=' . ($_POST['model_id'] ?? '?') . ' source_url=' . ($_POST['source_url'] ?? '?') . ' diarize=' . ($_POST['diarize'] ?? '?') . ' keyterms=' . implode('|', $kt[1]));
-    if (($_POST['source_url'] ?? '') === '') out(['detail' => ['message' => 'Provide file or source_url']], 422);
+    if (isset($_FILES['file'])) {
+        logline('  file=' . $_FILES['file']['name'] . ' bytes=' . $_FILES['file']['size'] . ' err=' . $_FILES['file']['error']);
+        file_put_contents(__DIR__ . '/stt_file.txt', $_FILES['file']['name'] . ' ' . $_FILES['file']['size']);
+    }
+    if (($_POST['source_url'] ?? '') === '' && empty($_FILES['file']['size'])) out(['detail' => ['message' => 'Provide file or source_url']], 422);
     sleep(3);
     // Words from the v2 test transcript, spread evenly over each line.
     $words = [];

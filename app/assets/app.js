@@ -175,7 +175,7 @@
   /* ---------- state loading ---------- */
   async function loadState(prefer = {}) {
     const d = await api('state');
-    S.films = d.films; S.versions = d.versions; S.user = d.user; S.conn = d.connections || S.conn;
+    S.films = d.films; S.versions = d.versions; S.user = d.user; S.conn = d.connections || S.conn; S.uploadChunk = d.upload_chunk || 1024 * 1024;
     const hash = new URLSearchParams(location.hash.slice(1));
     const num = (x) => (x ? +x : null);
     let film = prefer.filmId ?? num(hash.get('film')) ?? num(ls.get('film'));
@@ -237,7 +237,7 @@
     loadScript().catch(fail);
     updateLinkUI();
     const linked = S.conn.frameio && S.version.fio_file_id;
-    const src = S.sources.get(id) || (!linked && S.version.video_url ? { url: S.version.video_url, name: 'Video link' } : null);
+    const src = S.sources.get(id) || soundSource(S.version) || (!linked && S.version.video_url ? { url: S.version.video_url, name: 'Video link' } : null);
     setSource(src);
     if (!src && linked) streamFrameio().catch(fail);
     if (linked && can('editor') && !SHARE && (!S.version.fio_synced_at || Date.now() - new Date(S.version.fio_synced_at) > 5 * 60 * 1000)) syncComments(true).catch(() => {});
@@ -249,8 +249,56 @@
     const linked = !!(S.conn.frameio && S.version?.fio_file_id);
     $('streamBtn').hidden = !linked;
     $('qualityRow').hidden = !(linked && video.dataset.remote === '1');
-    $('transcribeBtn').hidden = !can('editor') || !(S.conn.elevenlabs && S.version && (S.version.fio_file_id || S.version.video_url));
+    $('transcribeBtn').hidden = !can('editor') || !(S.conn.elevenlabs && S.version && onServer(S.version));
     renderPickers();
+  }
+
+  /* ---------- sound-only versions ---------- */
+  // A cut that is only sound (a radio edit, a narration record): the file is uploaded to the server, so everyone
+  // can play it and ElevenLabs can transcribe it.
+  const onServer = (v) => !!(v.fio_file_id || v.video_url || v.audio_name);
+  function soundSource(v) {
+    if (!v?.audio_name) return null;
+    const q = new URLSearchParams({ action: 'version.audio', version_id: v.id, n: v.audio_size || 0, ...(SHARE ? { share: SHARE } : {}) });
+    return { url: 'api.php?' + q, name: v.audio_name, sound: true };
+  }
+  const fmtBytes = (n) => (n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : n >= 1e6 ? Math.round(n / 1e6) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB');
+  const SOUND_ACCEPT = 'audio/*,.wav,.mp3,.m4a,.aac,.aif,.aiff,.flac,.ogg,.opus';
+
+  // Upload a sound file in pieces (shared hosting takes only a few MB per request), with progress and Stop.
+  function uploadSound(v, file) {
+    return new Promise((resolve, reject) => {
+      let stopped = false;
+      const bar = el('progress', { max: file.size, value: 0, class: 'up-bar' });
+      const line = el('p', { class: 'small', text: `0 of ${fmtBytes(file.size)}` });
+      showDialog(el('h2', { text: 'Uploading the sound' }),
+        el('p', { text: `${file.name} → ${v.label}` }), bar, line,
+        el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn', text: 'Stop', onclick: () => { stopped = true; } })));
+      (async () => {
+        const size = S.uploadChunk || 1024 * 1024;
+        let r = {};
+        for (let at = 0; at < file.size || at === 0; at += size) {
+          if (stopped) throw new Error('Upload stopped. The version keeps its previous sound, if it had one.');
+          const form = new FormData();
+          form.append('version_id', v.id); form.append('offset', at); form.append('total', file.size); form.append('name', file.name);
+          form.append('chunk', file.slice(at, at + size), 'chunk');
+          r = await api('version.audio', { form });
+          bar.value = r.received; line.textContent = `${fmtBytes(r.received)} of ${fmtBytes(file.size)}`;
+          if (r.done) break;
+        }
+        closeDialog();
+        Object.assign(v, { audio_name: r.audio_name, audio_size: r.audio_size });
+        if (v.id === S.versionId) { S.sources.delete(v.id); setSource(soundSource(v)); updateLinkUI(); }
+        return r;
+      })().then(resolve, (err) => { closeDialog(); reject(err); });
+    });
+  }
+  async function removeSound(v) {
+    if (!confirm(`Remove the sound file “${v.audio_name}” from ${v.label}? The transcript and notes stay.`)) return false;
+    await api('version.audio.remove', { body: { version_id: v.id } });
+    v.audio_name = null; v.audio_size = null;
+    if (v.id === S.versionId) { setSource(null); updateLinkUI(); }
+    return true;
   }
 
   async function streamFrameio(resumeFrame) {
@@ -554,9 +602,9 @@
   }
 
   /* ---------- ElevenLabs transcription ---------- */
-  async function startTranscribe(vid) {
+  async function startTranscribe(vid, asked) {
     const v = S.versions.find((x) => x.id === vid);
-    if (!confirm(`Transcribe ${v ? v.label : 'this cut'} with ElevenLabs? The audio is sent to ElevenLabs. A 45-minute cut costs about 17 cents.`)) return;
+    if (!asked && !confirm(`Transcribe ${v ? v.label : 'this cut'} with ElevenLabs? The audio is sent to ElevenLabs. A 45-minute cut costs about 17 cents.`)) return;
     const r = await api('transcribe.create', { body: { version_id: vid } });
     if (!r.already) api('transcribe.run', { body: { job_id: r.job_id } }).catch(() => { /* the status poll reports problems */ });
     toast('Transcription started. You can keep working; it appears in the Transcript tab when it’s done.');
@@ -1529,6 +1577,7 @@
     $('screenWhy').hidden = !why;
     $('keepVideoBtn').hidden = !!why || !screen.classList.contains('has-video');
     $('removeLinkBtn').hidden = !S.version?.video_url || !can('editor');
+    $('soundBtn').hidden = !can('editor') || !!SHARE;
     video.pause();
   }
   function hideSourceChoice() { $('screen').classList.remove('choosing'); $('screenWhy').hidden = true; }
@@ -1539,7 +1588,7 @@
     if (!src) {
       video.dataset.remote = '';
       video.removeAttribute('src'); video.load();
-      screen.classList.remove('has-video');
+      screen.classList.remove('has-video', 'sound-only');
       const last = S.versionId && ls.get('file:' + S.versionId);
       $('screenEmpty').querySelector('p').textContent = last
         ? `Open the video for this version. Last time it was “${last}”.`
@@ -1554,6 +1603,8 @@
       rateProbe.last = null; rateProbe.sum = 0; rateProbe.n = 0; rateProbe.asked = false;
     }
     screen.classList.add('has-video');
+    screen.classList.toggle('sound-only', !!src.sound);
+    $('screenSoundName').textContent = src.sound ? src.name : '';
   }
 
   function frameFromTime(t) { return Math.floor(t * rate() + 1e-3); }
@@ -1598,6 +1649,8 @@
     }
     const why = video.dataset.remote === '1'
       ? 'Frame.io’s video won’t play in this browser. Try another quality, or download the file and open it.'
+      : S.version?.audio_name && video.getAttribute('src') === soundSource(S.version).url
+        ? 'This browser can’t play the sound file. ElevenLabs can still transcribe it; to listen here, upload it as WAV or MP3.'
       : S.version?.video_url && video.getAttribute('src') === S.version.video_url
         ? 'The saved video link doesn’t play: it may be a web page rather than the video file, or it may have expired. Use another link, or open a file.'
         : 'This video won’t play in the browser. Use an H.264 MP4.';
@@ -1724,13 +1777,17 @@
     if (!f || !S.versionId) return;
     const old = S.sources.get(S.versionId);
     if (old?.local) URL.revokeObjectURL(old.url);
-    const src = { url: URL.createObjectURL(f), name: f.name, local: true };
+    const src = { url: URL.createObjectURL(f), name: f.name, local: true, sound: f.type.startsWith('audio/') };
     S.sources.set(S.versionId, src);
     ls.set('file:' + S.versionId, f.name);
     setSource(src);
     e.target.value = '';
   });
   $('urlBtn').addEventListener('click', openVideoLink);
+  $('soundInput').addEventListener('change', (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (f && S.version) uploadSound(S.version, f).then(() => toast(S.conn.elevenlabs ? 'Sound uploaded. Transcribe it from the Transcript tab.' : 'Sound uploaded.'), fail);
+  });
   $('changeVideoBtn').addEventListener('click', () => showSourceChoice());
   $('keepVideoBtn').addEventListener('click', hideSourceChoice);
   $('removeLinkBtn').addEventListener('click', async () => {
@@ -2477,19 +2534,38 @@
       };
       carry.addEventListener('change', loadStack);
       loadStack();
+      // Picture, or only sound: a sound file is uploaded, then (if asked) transcribed straight away.
+      const kind = el('select', { name: 'kind' },
+        el('option', { value: 'video', text: 'Video (open, stream or link it after)' }),
+        el('option', { value: 'sound', text: 'Sound only (upload a sound file)' }));
+      const soundFile = el('input', { type: 'file', accept: SOUND_ACCEPT });
+      const soundTx = el('input', { type: 'checkbox', checked: true });
+      const soundWrap = el('div', { class: 'sound-new', hidden: true },
+        el('label', {}, 'Sound file (WAV, MP3, M4A, AIFF…)', soundFile),
+        S.conn.elevenlabs ? el('label', { class: 'inline' }, soundTx, 'Transcribe it with ElevenLabs once it’s uploaded') : null);
+      kind.addEventListener('change', () => { soundWrap.hidden = kind.value !== 'sound'; soundFile.required = kind.value === 'sound'; });
       const newVersion = el('form', { onsubmit: async (e) => {
         e.preventDefault();
         try {
           const opt = fioPick.selectedOptions[0];
+          const sound = kind.value === 'sound' ? soundFile.files[0] : null;
+          if (kind.value === 'sound' && !sound) { soundFile.focus(); return; }
           const r = await api('version.create', { body: { film_id: S.filmId, label: label.value, carry_from: carry.value || null,
             fio_file_id: fioPick.value || null, fio_stack_id: opt?.dataset.stack || null, fio_name: opt?.dataset.name || null, color: colorPick.value } });
           closeDialog();
+          S.manageOpen = r.id;
           await loadState({ filmId: S.filmId, versionId: r.id });
+          if (sound) {
+            await uploadSound(S.version, sound);
+            if (S.conn.elevenlabs && soundTx.checked) { setTab('script'); await startTranscribe(r.id, true); return; }
+          }
           if (fioPick.value) await syncComments(false).catch(fail);
           toast(r.carried ? `${r.carried} unfinished notes carried over. Import this cut’s edit or transcript to place them automatically.` + (r.placement ? placementSummary({ [r.id]: r.placement }, r.id) : '') : 'Version added');
         } catch (err) { fail(err); }
       } },
       el('div', { class: 'two' }, el('label', {}, 'Name of the new cut', label), el('label', {}, 'Colour', colorPick)),
+      el('label', {}, 'Picture or sound', kind),
+      soundWrap,
       versions.length ? el('label', {}, 'Notes', carry) : null,
       fioWrap,
       el('p', { class: 'small', text: 'Carrying notes brings every note that isn’t approved, dropped or cut into the new version. Then import its edit or transcript (or match pictures) to place them.' }),
@@ -2587,7 +2663,8 @@
     const parent = S.versions.find((x) => x.id === v.carried_from);
     const meta = [`${v.note_count} notes`, parent ? `carried from ${parent.label}` : null].filter(Boolean).join(' · ');
     // What this version has, at a glance, for the one-line (closed) view.
-    const has = [v.fio_file_id ? 'Frame.io' : null, v.edit ? 'edit' : null, v.transcript_count > 0 ? 'transcript' : null].filter(Boolean);
+    const sound = pick(SOUND_ACCEPT, async (f) => { await uploadSound(v, f); await reopenManage(v, 'Sound uploaded.'); });
+    const has = [v.fio_file_id ? 'Frame.io' : null, v.audio_name ? 'sound' : null, v.edit ? 'edit' : null, v.transcript_count > 0 ? 'transcript' : null].filter(Boolean);
     return el('details', { class: 'vrow', open, ontoggle: (e) => { if (e.target.open) S.manageOpen = v.id; } },
       el('summary', { class: 'vrow-head' },
         swatch(v, 'vchip'),
@@ -2603,6 +2680,13 @@
           S.conn.frameio ? el('button', { type: 'button', class: 'btn' + (v.fio_file_id ? ' ghost' : ''), text: v.fio_file_id ? 'Change link…' : 'Link…', onclick: () => openLinkDialog(v) }) : null,
           S.conn.frameio && v.fio_file_id ? el('button', { type: 'button', class: 'btn ghost', text: 'Unlink', onclick: async () => {
             try { await api('version.unlink', { body: { version_id: v.id } }); await reopenManage(v, 'Unlinked from Frame.io.'); } catch (err) { fail(err); }
+          } }) : null),
+        el('dt', { text: 'Sound only' }),
+        el('dd', {},
+          el('span', { text: v.audio_name ? `${v.audio_name} · ${fmtBytes(+v.audio_size || 0)}` : 'For a cut without picture: upload its sound to play and transcribe it' }),
+          can('editor') ? el('label', { class: 'btn ghost' }, v.audio_name ? 'Replace…' : 'Upload…', sound) : null,
+          can('editor') && v.audio_name ? el('button', { type: 'button', class: 'btn ghost', text: 'Remove', onclick: async () => {
+            try { if (await removeSound(v)) await reopenManage(v, 'Sound removed.'); } catch (err) { fail(err); }
           } }) : null),
         el('dt', { text: 'Comments' }),
         el('dd', {}, el('span', { text: 'Frame.io export (.csv)' }), el('label', { class: 'btn' + (v.fio_file_id ? ' ghost' : '') }, 'Import', csv)),
@@ -2627,7 +2711,7 @@
         el('dt', { text: 'Transcript' }),
         el('dd', {},
           el('span', { text: v.transcript_count > 0 ? `${v.transcript_count} upload${v.transcript_count > 1 ? 's' : ''} (latest is used)` : 'None yet: .srt, .vtt or timecoded .txt' }),
-          S.conn.elevenlabs && (v.fio_file_id || v.video_url) ? el('button', { type: 'button', class: 'btn', text: 'Transcribe', onclick: async () => {
+          S.conn.elevenlabs && onServer(v) ? el('button', { type: 'button', class: 'btn', text: 'Transcribe', onclick: async () => {
             closeDialog(); if (v.id !== S.versionId) await selectVersion(v.id); setTab('script'); startTranscribe(v.id).catch(fail);
           } }) : null,
           el('label', { class: 'btn' + (S.conn.elevenlabs ? ' ghost' : '') }, v.transcript_count > 0 ? 'Upload new' : 'Upload', script)),
@@ -3185,6 +3269,7 @@
         L('The Transcript tab scrolls with playback and marks lines that are new or reworded since the previous cut.',
           'Script view shows each line, its notes, and the new wording side by side.',
           canScript() && !can('editor') ? 'Suggest a rewrite or a new line; it’s saved as a draft for an editor to approve.' : null,
+          can('editor') ? 'No picture? Add a version as Sound only (New version… → Picture or sound): the sound file is uploaded, transcribed by ElevenLabs, and plays here like a cut.' : null,
           can('editor') ? 'Voice-over… voices the script changes (or the whole script) with ElevenLabs, then downloads one clip per line and an FCP7 XML that places them for Premiere or Resolve.' : null,
           can('editor') ? 'The TX track on the timeline shows the new script’s lines at their times (added lines on the row underneath): drag a line to move it, or its edges to change how long it lasts. Rewrite, cross out or add lines; approve them when final. In the transcript list, ✕ (or X / Delete on a line) crosses a line out and brings it back. Download script… gives the original script, the original with the new script in place, or only the changes, as a PDF with the changes highlighted, a spreadsheet or plain text.' : null)),
       can('editor') ? sec('Versions, imports and tracks', false,

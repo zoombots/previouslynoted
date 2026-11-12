@@ -964,3 +964,16 @@ ol.vo-lines:empty { display: none; }
 .vo-line.err { background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .vo-play { padding: 0 6px; min-height: 0; height: 24px; }
 .vo-state { color: var(--muted); text-align: center; }
+
+/* Sound-only versions: the player has no picture, so say so where the picture would be. */
+.screen-sound { display: none; }
+.screen.sound-only .screen-sound {
+  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 6px;
+  color: #c9ced6; text-align: center; pointer-events: none; padding: 16px;
+}
+.screen-sound svg { width: 44px; height: 44px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: .8; }
+.screen-sound strong { font-size: 15px; font-weight: 600; }
+.screen-sound small { font-size: 13px; color: #8d94a0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screen.sound-only.choosing .screen-sound { display: none; }
+.sound-new { display: grid; gap: 10px; }
+dialog progress.up-bar { width: 100%; height: 8px; }
