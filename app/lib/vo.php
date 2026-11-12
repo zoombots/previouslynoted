@@ -63,6 +63,17 @@ function vo_dir(int $versionId): string
     return $d;
 }
 
+/** ElevenLabs' speech models we know, best for film VO first. Others the account lists come after them. */
+const VO_MODELS = [
+    'eleven_v4' => ['name' => 'Eleven v4', 'about' => 'Newest, most natural and expressive; 90+ languages'],
+    'eleven_v3' => ['name' => 'Eleven v3', 'about' => 'Very expressive, dramatic delivery; 70+ languages'],
+    'eleven_multilingual_v2' => ['name' => 'Eleven Multilingual v2', 'about' => 'Steady and consistent for long narration; 29 languages'],
+    'eleven_flash_v2_5' => ['name' => 'Eleven Flash v2.5', 'about' => 'Fast and half the cost; 32 languages; good for scratch VO'],
+    'eleven_flash_v2' => ['name' => 'Eleven Flash v2', 'about' => 'Fast and half the cost; English only'],
+    'eleven_turbo_v2_5' => ['name' => 'Eleven Turbo v2.5', 'about' => 'Older: Flash v2.5 replaces it'],
+    'eleven_turbo_v2' => ['name' => 'Eleven Turbo v2', 'about' => 'Older: Flash v2 replaces it'],
+];
+
 /** The voices and speech models on the ElevenLabs account. */
 function el_voices(): array
 {
@@ -80,17 +91,26 @@ function el_voices(): array
     usort($voices, fn($a, $b) => strcasecmp($a['name'], $b['name']));
     $models = [];
     [$st, $json] = http_call('GET', el_base() . '/v1/models', $h, null, 30);
-    if ($st === 200 && is_array($json)) {
+    $listed = $st === 200 && is_array($json);
+    if ($listed) {
         foreach ($json as $m) {
-            if (!empty($m['can_do_text_to_speech'])) {
-                $models[] = ['id' => (string)$m['model_id'], 'name' => (string)($m['name'] ?? $m['model_id'])];
+            if (!empty($m['can_do_text_to_speech']) && is_string($m['model_id'] ?? null)) {
+                $models[] = ['id' => $m['model_id'], 'name' => (string)($m['name'] ?? $m['model_id'])];
             }
         }
     }
     if (!$models) {
-        $models = [['id' => 'eleven_multilingual_v2', 'name' => 'Eleven Multilingual v2']];
+        // The key can't list models (it needs Models (Read)): offer ElevenLabs' standard speech models.
+        $models = array_map(fn($id) => ['id' => $id, 'name' => VO_MODELS[$id]['name']], array_keys(VO_MODELS));
     }
-    return ['voices' => $voices, 'models' => $models];
+    // Best known first, then the rest as ElevenLabs lists them; each with a word on what it's for.
+    $rank = array_flip(array_keys(VO_MODELS));
+    usort($models, fn($a, $b) => ($rank[$a['id']] ?? 99) <=> ($rank[$b['id']] ?? 99));
+    foreach ($models as &$m) {
+        $m['about'] = VO_MODELS[$m['id']]['about'] ?? '';
+    }
+    unset($m);
+    return ['voices' => $voices, 'models' => $models, 'models_listed' => $listed && $models];
 }
 
 /**
@@ -191,8 +211,29 @@ function vo_make_take(int $versionId, array $line, string $voice, array $set, ar
         $body['next_text'] = mb_substr($context['next'], 0, 600);
     }
     $url = el_base() . '/v1/text-to-speech/' . rawurlencode($voice) . '/with-timestamps?output_format=' . VO_FORMATS[$set['format']]['el'];
-    [$st, $json, $raw] = http_call('POST', $url, ['xi-api-key: ' . $key, 'Content-Type: application/json', 'Accept: application/json'],
-        json_encode($body, JSON_UNESCAPED_UNICODE), 120);
+    $send = fn($b) => http_call('POST', $url, ['xi-api-key: ' . $key, 'Content-Type: application/json', 'Accept: application/json'],
+        json_encode($b, JSON_UNESCAPED_UNICODE), 120);
+    [$st, $json, $raw] = $send($body);
+    // Some models (Eleven v3 and later) don't take the neighbouring lines, or take stability only as 0, 0.5 or 1.
+    // Try again without what they refuse (twice at most: each answer names one problem).
+    for ($try = 0; $try < 2 && in_array($st, [400, 422], true); $try++) {
+        $lower = strtolower(api_error_text($json, $raw));
+        $retry = $body;
+        if (str_contains($lower, 'previous') || str_contains($lower, 'next') || str_contains($lower, 'context') || str_contains($lower, 'not supported')) {
+            unset($retry['previous_text'], $retry['next_text']);
+        }
+        if (str_contains($lower, 'stability')) {
+            $retry['voice_settings']['stability'] = round($set['stability'] * 2) / 2;
+        }
+        if (str_contains($lower, 'speed')) {
+            unset($retry['voice_settings']['speed']);
+        }
+        if ($retry === $body) {
+            break;
+        }
+        $body = $retry;
+        [$st, $json, $raw] = $send($body);
+    }
     if ($st !== 200 || !is_array($json) || empty($json['audio_base64'])) {
         $why = api_error_text($json, $raw);
         $lower = strtolower($why);

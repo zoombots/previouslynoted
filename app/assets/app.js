@@ -293,7 +293,7 @@
       let stopped = false;
       const bar = el('progress', { max: file.size, value: 0, class: 'up-bar' });
       const line = el('p', { class: 'small', text: `0 of ${fmtBytes(file.size)}` });
-      showDialog(el('h2', { text: 'Uploading the sound' }),
+      showDialog({ lightDismiss: false }, el('h2', { text: 'Uploading the sound' }),
         el('p', { text: `${file.name} → ${v.label}` }), bar, line,
         el('div', { class: 'dlg-actions' }, el('button', { type: 'button', class: 'btn', text: 'Stop', onclick: () => { stopped = true; } })));
       (async () => {
@@ -2466,16 +2466,20 @@
 
   /* ---------- dialogs ---------- */
   const dlg = $('dlg');
-  // lightDismiss: a click outside the box closes it (for dialogs with nothing to lose, like Share).
+  // A click outside the box closes it, in every dialog; { lightDismiss: false } first keeps one open (an upload under way).
   function showDialog(...kids) {
-    let light = false;
-    if (kids[0] && kids[0].lightDismiss) { light = true; kids = kids.slice(1); }
+    let light = true;
+    if (kids[0] && typeof kids[0] === 'object' && !(kids[0] instanceof Node) && 'lightDismiss' in kids[0]) { light = !!kids[0].lightDismiss; kids = kids.slice(1); }
     dlg.replaceChildren(...kids.filter((k) => k != null && k !== false));
     dlg.dataset.light = light ? '1' : '';
     if (!dlg.open) dlg.showModal();
   }
+  // Only a click that starts and ends outside the box: selecting text in a field and letting go outside doesn't close it.
+  let downOutside = false;
+  const outside = (e) => { const r = dlg.getBoundingClientRect(); return e.target === dlg && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom); };
+  dlg.addEventListener('pointerdown', (e) => { downOutside = outside(e); });
   dlg.addEventListener('click', (e) => {
-    if (e.target !== dlg || dlg.dataset.light !== '1') return;
+    if (e.target !== dlg || dlg.dataset.light !== '1' || !downOutside) return;
     const r = dlg.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dlg.close();
   });
@@ -2651,7 +2655,15 @@
       radio('voscope', 'changes', 'Only the script changes', 'Rewritten and added lines. Clips line up with the original VO on the timeline.', (mem.scope || 'changes') === 'changes'),
       radio('voscope', 'all', 'The whole new script', 'Every line, with the new wording in place and crossed-out lines left out.', mem.scope === 'all'));
     const drafts = el('input', { type: 'checkbox', checked: mem.drafts ?? false });
-    const model = el('select', {}, ...opt(lib.models, mem.model || 'eleven_multilingual_v2'));
+    const model = el('select', {}, ...lib.models.map((m) => el('option', { value: m.id, text: m.name, selected: m.id === (mem.model || 'eleven_multilingual_v2') })));
+    // What the chosen model is good for, and (when the key can't list them) that these are ElevenLabs' standard ones.
+    const modelHint = el('small', { class: 'hint' });
+    const showModel = () => {
+      const m = lib.models.find((x) => x.id === model.value);
+      modelHint.textContent = (m?.about || '') + (lib.models_listed ? '' : (m?.about ? '. ' : '') + 'ElevenLabs’ standard models: turn on Models (Read) for the API key to list exactly what your account has.');
+    };
+    model.addEventListener('change', showModel);
+    showModel();
     const speed = el('select', {}, ...[['0.9', 'A little slower'], ['1', 'Normal'], ['1.1', 'A little faster']]
       .map(([v, t]) => el('option', { value: v, text: t, selected: String(mem.speed ?? '1') === v })));
     const format = el('div', { class: 'dl-choices row two', role: 'radiogroup', 'aria-label': 'Audio files' },
@@ -2770,7 +2782,7 @@
       el('h3', { text: 'What to voice' }), scope,
       el('label', { class: 'inline' }, drafts, ' Include draft wording (otherwise only approved changes)'),
       el('h3', { text: 'Voice' }), voiceBox,
-      el('div', { class: 'two' }, el('label', {}, 'Model', model), el('label', {}, 'Pace', speed)),
+      el('div', { class: 'two' }, el('label', {}, 'Model', model, modelHint), el('label', {}, 'Pace', speed)),
       el('h3', { text: 'Files' }), format,
       el('label', {}, 'Folder the clips will be in, on the editing computer', folder,
         el('small', { class: 'hint', text: 'With this, the editing app finds the clips by itself. Without it, it asks you to find the first clip once.' })),

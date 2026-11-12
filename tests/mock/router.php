@@ -71,6 +71,8 @@ if ($path === '/ims/token/v3' && $method === 'POST') {
 function el_tts_key_check(string $perm): void
 {
     $k = $_SERVER['HTTP_XI_API_KEY'] ?? '';
+    if ($k === 'el-no-models' && $perm === 'models_read') out(['detail' => ['status' => 'missing_permissions', 'message' => "The API key you used is missing the permission $perm to execute this operation."]], 401);
+    if ($k === 'el-no-models') return;
     if ($k === 'el-stt-only') out(['detail' => ['status' => 'missing_permissions', 'message' => "The API key you used is missing the permission $perm to execute this operation."]], 401);
     if ($k !== 'el-test-key') out(['detail' => ['status' => 'invalid_api_key', 'message' => 'Invalid API key']], 401);
 }
@@ -110,6 +112,10 @@ if (preg_match('#^/v1/text-to-speech/([^/]+)/with-timestamps$#', $path, $m) && $
     file_put_contents(__DIR__ . '/tts.txt', (string)$n);
     logline("  tts voice={$m[1]} model=" . ($b['model_id'] ?? '?') . " format=$fmt prev=" . (isset($b['previous_text']) ? 'yes' : 'no') . ' text=' . mb_substr($b['text'] ?? '', 0, 40));
     if (($b['text'] ?? '') === '') out(['detail' => ['message' => 'text is required']], 422);
+    // Like the newer models: no neighbouring lines, and stability only 0, 0.5 or 1.
+    if (($b['model_id'] ?? '') === 'eleven_v3' && (isset($b['previous_text']) || isset($b['next_text']))) out(['detail' => ['status' => 'invalid_request', 'message' => 'previous_text and next_text are not supported with eleven_v3']], 400);
+    if (($b['model_id'] ?? '') === 'eleven_v3' && !in_array((float)($b['voice_settings']['stability'] ?? 0.5), [0.0, 0.5, 1.0], true)) out(['detail' => ['status' => 'invalid_request', 'message' => 'Invalid stability for eleven_v3: must be one of 0.0, 0.5, 1.0']], 400);
+    file_put_contents(__DIR__ . '/tts_last.txt', ($b['model_id'] ?? '?') . ' prev=' . (isset($b['previous_text']) ? 'yes' : 'no') . ' stab=' . ($b['voice_settings']['stability'] ?? '?'));
     if ($m[1] === 'voiceFreeTier' && str_starts_with($fmt, 'wav')) out(['detail' => ['status' => 'output_format_not_allowed', 'message' => 'Your subscription does not allow this output_format']], 403);
     $secs = max(1.0, str_word_count($b['text']) / 2.5);
     if (str_starts_with($fmt, 'wav')) {
